@@ -1,3 +1,3 @@
 fpbcopy() {
-    osascript -e "set the clipboard to (POSIX file \"$PWD/$1\")"
+    osascript -e "set the clipboard to (POSIX file \"$(realpath "$1")\")"
 }
