@@ -311,5 +311,8 @@ flip() { echo -n "（╯°□°）╯ ┻━┻" | tee /dev/tty | pbcopy; }
 
 shrug() { echo -n "¯\_(ツ)_/¯" | tee /dev/tty | pbcopy; }
 
+# Custom completions
+source <(uluru --completion-init)
+
 # Kiro CLI post block. Keep at the bottom of this file.
 [[ -f "${HOME}/Library/Application Support/kiro-cli/shell/zshrc.post.zsh" ]] && builtin source "${HOME}/Library/Application Support/kiro-cli/shell/zshrc.post.zsh"
