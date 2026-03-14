@@ -182,6 +182,8 @@ OPTIONS
                       agents skip re-reading them.
   --plan              Plan-only mode: agent produces a plan in ./plan.md
                       without modifying any other files.
+  --interactive       Run kiro-cli without --no-interactive (allows agent
+                      to prompt for input mid-run).
   -h, --help          Show this help
 
 DESCRIPTION
@@ -253,6 +255,7 @@ CONTINUE=false
 VERIFY_CMD=""
 INCLUDE_FILES=true
 PLAN_MODE=false
+INTERACTIVE=false
 while [[ "${1:-}" == -* ]]; do
   case "$1" in
     -h|--help) usage ;;
@@ -264,6 +267,7 @@ while [[ "${1:-}" == -* ]]; do
     --agent)          KIRO_AGENT="${2:?--agent requires an agent name}"; shift 2 ;;
     --no-include-files)  INCLUDE_FILES=false; shift ;;
     --plan)              PLAN_MODE=true; shift ;;
+    --interactive)       INTERACTIVE=true; shift ;;
     *)                echo "Unknown option: $1" >&2; exit 1 ;;
   esac
 done
@@ -353,11 +357,13 @@ new_untracked_files() {
 
 # Builds cumulative diff (tracked changes + new untracked files) into CURRENT_DIFF.
 build_diff() {
-  CURRENT_DIFF=$(git diff "$BASELINE" -- ':!.ralph/*' 2>/dev/null || true)
+  CURRENT_DIFF=$(git diff --text "$BASELINE" -- ':!.ralph/*' 2>/dev/null \
+    | LC_ALL=C tr -cd '[:print:]\t\n' || true)
   local f
   while IFS= read -r f; do
     [[ -z "$f" ]] && continue
-    CURRENT_DIFF+=$'\n'"$(git diff --no-index /dev/null "$f" 2>/dev/null || true)"
+    CURRENT_DIFF+=$'\n'"$(git diff --text --no-index /dev/null "$f" 2>/dev/null \
+      | LC_ALL=C tr -cd '[:print:]\t\n' || true)"
   done <<< "$(new_untracked_files)"
 }
 
@@ -448,7 +454,8 @@ timeout_msg() {
 
 run_kiro() {
   local prompt_file=$1
-  local args=(chat --no-interactive --trust-all-tools --agent "$KIRO_AGENT")
+  local args=(chat --trust-all-tools --agent "$KIRO_AGENT")
+  $INTERACTIVE || args+=(--no-interactive)
   [[ -n "$KIRO_MODEL_FLAG" ]] && args+=(--model "$KIRO_MODEL_FLAG")
   local attempt rc
   for attempt in 1 2 3; do
@@ -477,6 +484,8 @@ run_agent() {
   local file_label=$1 timing_label=$2 prompt=$3
   local prompt_file="$PWD/.ralph/prompts/${file_label}_r${round}.txt"
   echo "$prompt" > "$prompt_file"
+  # Strip invalid UTF-8 sequences — kiro-cli rejects non-UTF-8 stdin
+  LC_ALL=C tr -cd '[:print:]\t\n' < "$prompt_file" > "${prompt_file}.tmp" && mv "${prompt_file}.tmp" "$prompt_file"
   local t0=$SECONDS
   run_kiro "$prompt_file"
   log_timing "$timing_label" $((SECONDS - t0))
@@ -590,6 +599,7 @@ build_file_contents_block() {
   local block=""
   while IFS= read -r f; do
     [[ -f "$f" ]] || continue
+    grep -qI '' "$f" 2>/dev/null || continue  # skip binary files
     block+="
 <file_content path=\"$f\">
 $(cat -n "$f")
@@ -857,7 +867,7 @@ $TASK"
 fi
 
 if $PLAN_MODE; then
-  TASK="PLAN-ONLY MODE: You MAY read any code files to understand the codebase, but do NOT create, modify, or delete any project files except $PWD/plan.md. Your sole output is a markdown plan document at $PWD/plan.md. Research the codebase as needed, then write a detailed implementation plan for the following task:
+  TASK="PLAN-ONLY MODE: You MAY read any code files to understand the codebase, but do NOT create, modify, or delete any project files except $PWD/plan.md. Your sole output is a markdown plan document at $PWD/plan.md. When writing anything to the plan, do so in sections. Keep each section focused and concise — break large sections into smaller subsections. Research the codebase as needed, then write a detailed implementation plan for the following task:
 
 $TASK"
 fi
