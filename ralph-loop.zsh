@@ -76,6 +76,29 @@
 #     Solution: Replaced with `| tee "$VERIFY_OUTPUT"`, exit code captured via
 #               `${pipestatus[1]}` for reliability with `set -o pipefail`.
 #
+# 11. Reflection/gate re-verify unchanged files
+#     Problem:  On subsequent verification cycles, reflection and gate agents
+#               re-examined every file from scratch — even files the worker
+#               never touched since the last cycle.
+#     Solution: After each verification cycle, save md5 checksums of all worker
+#               files to `.ralph/verified-manifest`. Before the next cycle,
+#               compare current checksums against the manifest to produce a
+#               delta list of changed/new files. Prompts include this delta in
+#               a `<worker_delta>` block with EFFICIENCY instructions telling
+#               agents to skip re-verifying files not in the delta.
+#
+# 12. Reflection/gate verify pre-existing dirty state and user edits
+#     Problem:  `git diff $BASELINE` and `extract_worker_files` attributed all
+#               changes since baseline to the agent — including pre-existing
+#               uncommitted changes and edits made by the user during runtime.
+#     Solution: `save_pre_round_manifest` snapshots md5 checksums of all
+#               tracked+dirty files before each worker round. After the round,
+#               `files_changed_in_round` compares checksums to identify only
+#               files the agent actually changed. `fmt_agent_diff_block` filters
+#               the cumulative diff to agent-touched files only. Reflection and
+#               gate prompts include a SCOPE instruction to ignore non-agent
+#               changes. Worker prompt includes a rule to preserve user changes.
+#
 # DESIGN DECISIONS
 # ================
 #
@@ -156,6 +179,45 @@
 #   `git diff` and would be missing from the cumulative diff passed to
 #   reflection and gate agents. The `-N` flag registers the file without
 #   staging content, so `git diff` shows the full file as added.
+#
+# Checksum-based delta tracking for verification cycles
+#   After each reflection/gate cycle, `save_verified_manifest` writes md5
+#   checksums of all worker-touched files to `.ralph/verified-manifest`.
+#   Before the next cycle, `build_worker_delta` compares current checksums
+#   against the manifest to identify files the worker changed since the last
+#   verification. Reflection and gate prompts include this delta list in a
+#   `<worker_delta>` block so agents skip re-verifying unchanged files.
+#   Trade-off: relies on md5 for change detection (fast, sufficient for
+#   non-adversarial use). Manifest is saved after both pass and fail outcomes
+#   so the delta always reflects one round of worker changes.
+#
+# Per-round manifest for agent-only change attribution
+#   `save_pre_round_manifest` captures md5 checksums of all tracked and dirty
+#   files before each worker round. `files_changed_in_round` compares post-round
+#   checksums to identify files the agent actually modified — excluding
+#   pre-existing uncommitted changes and user runtime edits. This feeds into
+#   `extract_worker_files` (replacing the old `git diff --name-only $BASELINE`
+#   approach) and `fmt_agent_diff_block` (which filters the cumulative diff to
+#   agent-touched files only for reflection/gate prompts). Trade-off: checksums
+#   every tracked file before each round, adding a few seconds of overhead.
+#   Acceptable because worker rounds take minutes.
+#
+# Git worktree isolation (default)
+#   By default, ralph-loop creates a git worktree under
+#   `.ralph/runs/<run-id>/worktree` on a temporary branch
+#   (`ralph/<timestamp>` or `--branch`). Each run is namespaced by run ID
+#   (derived from branch name) so multiple runs execute in parallel without
+#   collision. Pre-existing dirty state (staged, unstaged, untracked) is
+#   transferred via `git stash create` + `stash apply` for tracked changes
+#   and `tar` for untracked files. Context files (`REPOMAP*.md`,
+#   `.project_state`) are copied since they may be gitignored. After
+#   transfer, `snapshot_pre` baselines the worktree state so diffs only
+#   capture agent changes. On successful exit, the diff is copied to
+#   `.ralph/runs/<run-id>/diff` (applicable via `git apply`) and the
+#   worktree + branch are removed. On interrupt, the worktree is preserved
+#   for `--continue`. `--continue` auto-detects the run if only one is
+#   active; otherwise `--branch` is required to select. Opt out with
+#   `--no-worktree` to run in the current tree.
 
 set -euo pipefail
 
@@ -506,9 +568,8 @@ extract_worker_files() {
           stat "$p" &>/dev/null && echo "$p"
         done >> "$WORKER_FILES"
   fi
-  # From git: files actually modified (catches fs_write tool edits)
-  git diff --name-only "$BASELINE" -- ':!.ralph/*' 2>/dev/null >> "$WORKER_FILES" || true
-  new_untracked_files >> "$WORKER_FILES"
+  # From git: files actually changed during this round (agent-only, via pre-round manifest)
+  files_changed_in_round >> "$WORKER_FILES"
   # Normalize to absolute paths, then dedup
   sed -i '' "s|^[^/]|$PWD/&|" "$WORKER_FILES"
   sort -uo "$WORKER_FILES" "$WORKER_FILES" 2>/dev/null || true
@@ -573,6 +634,61 @@ fmt_diff_block() {
   echo "</diff>"
 }
 
+# Like fmt_diff_block but only includes files in WORKER_FILES (agent-touched).
+fmt_agent_diff_block() {
+  [[ -n "$CURRENT_DIFF" ]] || return 0
+  [[ -s "$WORKER_FILES" ]] || return 0
+  local filtered
+  filtered=$(echo "$CURRENT_DIFF" | awk -v wf="$WORKER_FILES" '
+    BEGIN { while ((getline f < wf) > 0) keep[f]=1 }
+    /^diff --git / {
+      path = $0; sub(/^diff --git a\/.* b\//, "", path)
+      # Try both relative and absolute
+      show = (path in keep) || (ENVIRON["PWD"] "/" path in keep)
+    }
+    show { print }
+  ')
+  [[ -n "$filtered" ]] || return 0
+  echo "AGENT DIFF — only files changed by the agent (excludes pre-existing dirty state and user edits). Full cumulative diff: \`git diff \$(cat $RALPH_BASELINE_FILE)\`"
+  echo "<diff>"
+  echo "$filtered" | awk '
+    /^diff --git / {
+      if (path) print "</file_diff>"
+      path = $0; sub(/^diff --git a\/.* b\//, "", path)
+      printf "<file_diff path=\"%s\">\n", path
+    }
+    { print }
+    END { if (path) print "</file_diff>" }
+  '
+  echo "</diff>"
+}
+
+# Shows diff --stat + modification times for non-agent changes (pre-existing + user edits).
+fmt_external_changes_block() {
+  [[ -n "$CURRENT_DIFF" ]] || return 0
+  local all_changed
+  all_changed=$(echo "$CURRENT_DIFF" | grep -oE '^diff --git a/.* b/(.*)' | sed 's|^diff --git a/.* b/||' | sort -u)
+  [[ -n "$all_changed" ]] || return 0
+  local external=""
+  while IFS= read -r f; do
+    [[ -f "$f" ]] || continue
+    if [[ -s "$WORKER_FILES" ]]; then
+      grep -qxF "$f" "$WORKER_FILES" && continue
+      grep -qxF "$PWD/$f" "$WORKER_FILES" && continue
+    fi
+    local stat_line=$(git diff --stat "$BASELINE" -- "$f" 2>/dev/null | head -1)
+    local mtime=$(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "$f" 2>/dev/null)
+    external+="  $f  (modified: ${mtime:-unknown})  ${stat_line:+— $stat_line}"$'\n'
+  done <<< "$all_changed"
+  [[ -n "$external" ]] || return 0
+  cat <<EOF
+EXTERNAL CHANGES — files modified outside your control (pre-existing uncommitted changes or user edits during runtime). Do NOT revert or overwrite these. Be aware they exist in case of interactions with your work.
+<external_changes>
+${external%$'\n'}
+</external_changes>
+EOF
+}
+
 fmt_files_block() {
   [[ -s "$WORKER_FILES" ]] || return 0
   cat <<EOF
@@ -609,6 +725,71 @@ $(cat -n "$f")
   cat <<EOF
 PREVIOUSLY-READ FILE CONTENTS — CRITICAL: Do NOT read, cat, sed, or open ANY file listed below — not even partial/targeted reads. These are the current contents on disk at agent start and will not change during your runtime unless you change them (which you should not). Re-reading them in any form wastes time and context window.
 $block
+EOF
+}
+
+# Snapshots md5 checksums of all tracked + dirty files before a worker round.
+save_pre_round_manifest() {
+  local tmp="${PRE_ROUND_MANIFEST}.tmp"
+  { git diff --name-only "$BASELINE" -- ':!.ralph/*' 2>/dev/null
+    git ls-files -- ':!.ralph/*' 2>/dev/null
+    new_untracked_files
+  } | sort -u | while IFS= read -r f; do
+    [[ -f "$f" ]] || continue
+    echo "$(md5 -q "$f")  $f"
+  done > "$tmp"
+  mv "$tmp" "$PRE_ROUND_MANIFEST"
+}
+
+# Outputs files whose checksums changed since pre-round manifest (agent changes only).
+files_changed_in_round() {
+  [[ -f "$PRE_ROUND_MANIFEST" ]] || return 0
+  { git diff --name-only "$BASELINE" -- ':!.ralph/*' 2>/dev/null
+    new_untracked_files
+  } | sort -u | while IFS= read -r f; do
+    [[ -f "$f" ]] || continue
+    local cur=$(md5 -q "$f")
+    local prev=$(grep -F "  $f" "$PRE_ROUND_MANIFEST" | head -1 | cut -d' ' -f1)
+    [[ "$cur" == "$prev" ]] || echo "$f"
+  done
+}
+
+# Saves md5 checksums of all worker files for delta tracking.
+save_verified_manifest() {
+  [[ -s "$WORKER_FILES" ]] || return 0
+  local tmp="${VERIFIED_MANIFEST}.tmp"
+  > "$tmp"
+  while IFS= read -r f; do
+    [[ -f "$f" ]] || continue
+    echo "$(md5 -q "$f")  $f" >> "$tmp"
+  done < "$WORKER_FILES"
+  mv "$tmp" "$VERIFIED_MANIFEST"
+}
+
+# Outputs list of files changed/added since last verified manifest.
+build_worker_delta() {
+  [[ -s "$WORKER_FILES" ]] || return 0
+  if [[ ! -f "$VERIFIED_MANIFEST" ]]; then
+    # No prior manifest — all files are new
+    cat "$WORKER_FILES"
+    return 0
+  fi
+  while IFS= read -r f; do
+    [[ -f "$f" ]] || continue
+    local cur=$(md5 -q "$f")
+    local prev=$(grep -F "  $f" "$VERIFIED_MANIFEST" | head -1 | cut -d' ' -f1)
+    [[ "$cur" == "$prev" ]] || echo "$f"
+  done < "$WORKER_FILES"
+}
+
+fmt_worker_delta_block() {
+  local delta=$(build_worker_delta)
+  [[ -n "$delta" ]] || return 0
+  cat <<EOF
+WORKER DELTA — files changed or added since last reflection/gate cycle. Only these require fresh verification; previously-verified unchanged files can be skipped.
+<worker_delta>
+$delta
+</worker_delta>
 EOF
 }
 
@@ -689,10 +870,11 @@ EOF
 
 reflect_prompt() {
   local agent_history=$(fmt_agent_history)
-  local diff_block=$(fmt_diff_block)
+  local diff_block=$(fmt_agent_diff_block)
   local files_block=$(fmt_files_block)
   local verify_block=$(fmt_verify_block)
   local file_contents_block=$(build_file_contents_block)
+  local delta_block=$(fmt_worker_delta_block)
   cat <<EOF
 You are the REFLECTION agent. A worker agent claims it completed this task:
 
@@ -712,6 +894,8 @@ ${verify_block:+
 $verify_block}
 ${file_contents_block:+
 $file_contents_block}
+${delta_block:+
+$delta_block}
 
 Your job is to think LATERALLY about whether the worker has considered all possible avenues, approaches, and implications. This is NOT a correctness check — a separate gate agent handles that. Your focus is BREADTH and COMPLETENESS OF THINKING.
 
@@ -734,7 +918,7 @@ CRITICAL: Do NOT read, cat, sed, or open any file whose contents appear in XML b
 
 DEFAULT STANCE: Assume something was missed until you've verified otherwise. Better to send the worker back for one more round of consideration than to let a blind spot through.
 
-EFFICIENCY: If prior reflection rounds already covered avenues and the worker did not change the relevant files, do not re-examine them. Focus on new changes and previously-raised concerns.
+EFFICIENCY: The <worker_delta> block above (if present) lists files changed since the last reflection/gate cycle. For files NOT in that list, your prior verification still holds — do not re-examine them. Focus exclusively on changed/new files and any previously-raised concerns that remain unresolved. If no delta block is present, this is the first verification cycle — examine everything.
 
 DECISION:
 - If the worker has genuinely considered all reasonable avenues and the approach is sound, write EXACTLY "$REFLECT_PASS_TOKEN" to "$REFLECT_SIGNAL". The file must contain this token and nothing else.
@@ -747,10 +931,11 @@ EOF
 
 gate_prompt() {
   local agent_history=$(fmt_agent_history)
-  local diff_block=$(fmt_diff_block)
+  local diff_block=$(fmt_agent_diff_block)
   local files_block=$(fmt_files_block)
   local verify_block=$(fmt_verify_block)
   local file_contents_block=$(build_file_contents_block)
+  local delta_block=$(fmt_worker_delta_block)
   cat <<EOF
 You are the GATE-CHECK agent. A worker agent claims it completed this task:
 
@@ -770,6 +955,8 @@ ${verify_block:+
 $verify_block}
 ${file_contents_block:+
 $file_contents_block}
+${delta_block:+
+$delta_block}
 
 VERIFICATION PROCEDURE — execute EVERY step, do not skip any:
 
@@ -804,7 +991,7 @@ CRITICAL: Do NOT read, cat, sed, or open any file whose contents appear in XML b
 
 DEFAULT STANCE: Assume the work is incomplete until proven otherwise. Your job is to find problems, not to rubber-stamp. When in doubt, FAIL. A false rejection costs one more worker round. A false approval ships broken code.
 
-EFFICIENCY: If prior gate rounds already verified items and the worker did not change the relevant files, do not re-verify them. Focus on new changes and previously-failed items.
+EFFICIENCY: The <worker_delta> block above (if present) lists files changed since the last reflection/gate cycle. For files NOT in that list, your prior verification still holds — do not re-verify them. Focus exclusively on changed/new files and any previously-failed items. If no delta block is present, this is the first verification cycle — verify everything.
 
 DECISION:
 - ONLY if every single ask is done AND no follow-on codebase updates are missing, write EXACTLY "$GATE_PASS_TOKEN" to "$GATE_SIGNAL". The file must contain this token and nothing else — no explanation, no extra text.
@@ -889,6 +1076,7 @@ while true; do
     echo "══════════════════════════════════════\n"
 
     rm -f "$WORKER_SIGNAL" "$AGENT_MSG"
+    save_pre_round_manifest
     run_agent "worker" "Worker Round $round" "$(worker_prompt)"
     extract_worker_files
     if [[ -f "$AGENT_MSG" ]]; then
@@ -926,6 +1114,7 @@ while true; do
   fi
 
   if check_signal "$REFLECT_SIGNAL" "$REFLECT_FAIL_TOKEN"; then
+    save_verified_manifest
     echo "\n✗ Reflection found unexplored avenues. Sending back to worker...\n"
     continue
   fi
@@ -937,6 +1126,7 @@ while true; do
   if [[ -f "$AGENT_MSG" ]]; then
     { echo "── Gate-Check ──"; cat "$AGENT_MSG"; } | tee -a "$AGENT_LOG" >> "$GATE_LOG"
   fi
+  save_verified_manifest
 
   if check_signal "$GATE_SIGNAL" "$GATE_PASS_TOKEN"; then
     echo "\n══════════════════════════════════════"
