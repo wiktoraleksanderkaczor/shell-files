@@ -484,7 +484,10 @@ on_interrupt() {
   [[ -n "${LOOP_START:-}" ]] && log_timing "Total (interrupted)" $((SECONDS - LOOP_START))
   echo "  Agent log: $AGENT_LOG"
   echo "  Diff:      $RALPH_DIFF"
-  echo "  Resume:    $0 --continue \"<instructions>\""
+  [[ -n "$WORKTREE_DIR" ]] && echo "  Worktree:  $WORKTREE_DIR (preserved)"
+  local resume="$0 --continue"
+  [[ -n "$RALPH_RUN_BRANCH" ]] && resume+=" --branch $RALPH_RUN_BRANCH"
+  echo "  Resume:    $resume \"<instructions>\""
   cleanup
   exit 130
 }
@@ -1150,6 +1153,30 @@ trap cleanup EXIT
 trap on_interrupt INT
 
 if $CONTINUE; then
+  # Find the run to continue — use --branch if specified, else auto-detect
+  if [[ -z "$WORKTREE_BRANCH" ]] && $WORKTREE; then
+    local active_runs=(.ralph/runs/*/worktree-dir(N))
+    if (( ${#active_runs} == 0 )); then
+      # No worktree runs — try legacy .ralph/ state (--no-worktree run)
+      :
+    elif (( ${#active_runs} == 1 )); then
+      RALPH_RUN_DIR="${active_runs[1]:h}"
+      RALPH_RUN_ID="${RALPH_RUN_DIR##*/}"
+      RALPH_WORKTREE_FILE="${active_runs[1]}"
+    else
+      echo "Error: multiple active runs found. Specify --branch to select one:" >&2
+      for r in "${active_runs[@]}"; do echo "  ${${r:h}##*/}" >&2; done
+      exit 1
+    fi
+  fi
+  # Reuse existing worktree if present — must cd before checking relative paths
+  if [[ -f "$RALPH_WORKTREE_FILE" ]]; then
+    WORKTREE_DIR=$(<"$RALPH_WORKTREE_FILE")
+    if [[ -d "$WORKTREE_DIR" ]]; then
+      cd "$WORKTREE_DIR"
+      echo "📂 Resuming in worktree: $WORKTREE_DIR"
+    fi
+  fi
   if [[ ! -f "$AGENT_LOG" ]]; then
     echo "Error: no prior run found ($AGENT_LOG missing). Run without --continue first." >&2
     exit 1
