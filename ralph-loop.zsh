@@ -246,6 +246,10 @@ OPTIONS
                       without modifying any other files.
   --interactive       Run kiro-cli without --no-interactive (allows agent
                       to prompt for input mid-run).
+  --no-worktree       Run directly in the current working tree instead of
+                      an isolated git worktree (worktree is the default).
+  --branch NAME       Custom branch name for the worktree (default:
+                      ralph/<timestamp>).
   -h, --help          Show this help
 
 DESCRIPTION
@@ -273,10 +277,16 @@ DESCRIPTION
   gate sees all worker rounds, etc. The log is inlined into every prompt.
 
 DIFF OUTPUT
-  In git repositories, a working tree snapshot is taken before the loop starts
-  using `git stash create` (no commits, no working tree modification). On
-  completion, a diff of all agent changes (including new untracked files) is
-  saved to .ralph/diff.
+  By default, the loop runs in an isolated git worktree. Pre-existing dirty
+  state (staged, unstaged, untracked) is transferred to the worktree so the
+  agent works in a realistic snapshot. The final diff captures only agent
+  changes and is saved to .ralph/diff in the original directory, applicable
+  via \`git apply .ralph/diff\`. The worktree is removed on successful exit
+  and preserved on interrupt for \`--continue\`.
+
+  With \`--no-worktree\`, a working tree snapshot is taken before the loop
+  starts using \`git stash create\`. On completion, a diff of all agent
+  changes (including new untracked files) is saved to .ralph/diff.
 
 FILES (created in .ralph/ directory)
   .ralph/worker-signal   Worker completion token (cleaned up on exit)
@@ -295,6 +305,9 @@ FILES (created in .ralph/ directory)
   .ralph/prompts/        Generated prompts per agent per round (persisted)
   .ralph/verify-output   Verify command output (cleaned up on exit)
   .ralph/worker-files    Absolute paths of files read/modified (persisted)
+  .ralph/verified-manifest  md5 checksums from last verification cycle (persisted)
+  .ralph/pre-round-manifest md5 checksums from before current worker round (transient)
+  .ralph/worktree-dir  Path to active worktree directory (persisted)
 
 EXAMPLES
   ./ralph-loop.zsh "Refactor auth module to use JWT tokens"
@@ -304,6 +317,8 @@ EXAMPLES
   ./ralph-loop.zsh --verify-cmd "npm test 2>&1" "Add pagination to /users"
   ./ralph-loop.zsh --agent coding "Implement the new feature"
   ./ralph-loop.zsh --continue "Also handle the edge case in auth.js"
+  ./ralph-loop.zsh --no-worktree "Quick fix in current tree"
+  ./ralph-loop.zsh --branch feature/auth "Refactor auth module"
 EOF
   exit 0
 }
