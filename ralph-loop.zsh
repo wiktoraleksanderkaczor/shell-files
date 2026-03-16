@@ -348,30 +348,35 @@ fi
 
 # ─── Paths & tokens ──────────────────────────────────────────────────────────
 
-WORKER_SIGNAL=".ralph/worker-signal"
-GATE_SIGNAL=".ralph/gate-signal"
-REFLECT_SIGNAL=".ralph/reflect-signal"
+RALPH_STATE=".ralph/local"
+$WORKTREE && RALPH_STATE=".ralph"
+
+WORKER_SIGNAL="$RALPH_STATE/worker-signal"
+GATE_SIGNAL="$RALPH_STATE/gate-signal"
+REFLECT_SIGNAL="$RALPH_STATE/reflect-signal"
 WORKER_TOKEN="RALPH_WORKER_DONE"
 GATE_PASS_TOKEN="RALPH_GATE_PASSED"
 GATE_FAIL_TOKEN="RALPH_GATE_FAILED"
 REFLECT_PASS_TOKEN="RALPH_REFLECT_PASSED"
 REFLECT_FAIL_TOKEN="RALPH_REFLECT_FAILED"
 
-AGENT_LOG=".ralph/agent-log"
-WORKER_LOG=".ralph/worker-log"
-GATE_LOG=".ralph/gate-log"
-AGENT_MSG=".ralph/agent-msg"
-RALPH_DIFF=".ralph/diff"
-RALPH_SUMMARY=".ralph/summary"
-RALPH_TASK=".ralph/task"
-RALPH_LOCK=".ralph/lock"
-RALPH_ROUND_FILE=".ralph/round"
-RALPH_BASELINE_FILE=".ralph/baseline"
-RALPH_PRE_UNTRACKED_FILE=".ralph/pre-untracked"
-WORKER_FILES=".ralph/worker-files"
-KIRO_OUTPUT=".ralph/kiro-output"
-VERIFY_OUTPUT=".ralph/verify-output"
-RALPH_TIMINGS=".ralph/timings"
+AGENT_LOG="$RALPH_STATE/agent-log"
+WORKER_LOG="$RALPH_STATE/worker-log"
+GATE_LOG="$RALPH_STATE/gate-log"
+AGENT_MSG="$RALPH_STATE/agent-msg"
+RALPH_DIFF="$RALPH_STATE/diff"
+RALPH_SUMMARY="$RALPH_STATE/summary"
+RALPH_TASK="$RALPH_STATE/task"
+RALPH_LOCK="$RALPH_STATE/lock"
+RALPH_ROUND_FILE="$RALPH_STATE/round"
+RALPH_BASELINE_FILE="$RALPH_STATE/baseline"
+RALPH_PRE_UNTRACKED_FILE="$RALPH_STATE/pre-untracked"
+WORKER_FILES="$RALPH_STATE/worker-files"
+VERIFIED_MANIFEST="$RALPH_STATE/verified-manifest"
+PRE_ROUND_MANIFEST="$RALPH_STATE/pre-round-manifest"
+KIRO_OUTPUT="$RALPH_STATE/kiro-output"
+VERIFY_OUTPUT="$RALPH_STATE/verify-output"
+RALPH_TIMINGS="$RALPH_STATE/timings"
 
 BASELINE=""
 PRE_UNTRACKED=""
@@ -521,7 +526,7 @@ snapshot_pre() {
       echo "$PRE_UNTRACKED" > "$RALPH_PRE_UNTRACKED_FILE"
     fi
   else
-    export GIT_DIR="$PWD/.ralph/.git"
+    export GIT_DIR="$PWD/$RALPH_STATE/.git"
     export GIT_WORK_TREE="$PWD"
     if $CONTINUE && [[ -d "$GIT_DIR" ]]; then
       BASELINE=$(<"$RALPH_BASELINE_FILE")
@@ -614,7 +619,7 @@ run_kiro() {
 # Saves prompt, runs kiro, logs timing. Usage: run_agent <file_label> <timing_label> <prompt>
 run_agent() {
   local file_label=$1 timing_label=$2 prompt=$3
-  local prompt_file="$PWD/.ralph/prompts/${file_label}_r${round}.txt"
+  local prompt_file="$PWD/$RALPH_STATE/prompts/${file_label}_r${round}.txt"
   echo "$prompt" > "$prompt_file"
   # Strip invalid UTF-8 sequences — kiro-cli rejects non-UTF-8 stdin
   LC_ALL=C tr -cd '[:print:]\t\n' < "$prompt_file" > "${prompt_file}.tmp" && mv "${prompt_file}.tmp" "$prompt_file"
@@ -1099,7 +1104,8 @@ EOF
 
 # ─── Main loop ────────────────────────────────────────────────────────────────
 
-mkdir -p .ralph/prompts
+mkdir -p .ralph
+mkdir -p "$RALPH_STATE"
 setup_git_wrapper
 cleanup
 if ! $WORKTREE; then
@@ -1126,6 +1132,8 @@ $TASK"
 else
   setup_worktree
 fi
+# Ensure prompts dir exists in working directory (may be worktree)
+mkdir -p "$RALPH_STATE/prompts"
 
 if $PLAN_MODE; then
   TASK="PLAN-ONLY MODE: You MAY read any code files to understand the codebase, but do NOT create, modify, or delete any project files except $PWD/plan.md. Your sole output is a markdown plan document at $PWD/plan.md. When writing anything to the plan, do so in sections. Keep each section focused and concise — break large sections into smaller subsections. Research the codebase as needed, then write a detailed implementation plan for the following task:
