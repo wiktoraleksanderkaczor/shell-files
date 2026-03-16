@@ -318,6 +318,8 @@ VERIFY_CMD=""
 INCLUDE_FILES=true
 PLAN_MODE=false
 INTERACTIVE=false
+WORKTREE=true
+WORKTREE_BRANCH=""
 while [[ "${1:-}" == -* ]]; do
   case "$1" in
     -h|--help) usage ;;
@@ -330,6 +332,8 @@ while [[ "${1:-}" == -* ]]; do
     --no-include-files)  INCLUDE_FILES=false; shift ;;
     --plan)              PLAN_MODE=true; shift ;;
     --interactive)       INTERACTIVE=true; shift ;;
+    --no-worktree)       WORKTREE=false; shift ;;
+    --branch)            WORKTREE_BRANCH="${2:?--branch requires a branch name}"; shift 2 ;;
     *)                echo "Unknown option: $1" >&2; exit 1 ;;
   esac
 done
@@ -337,6 +341,10 @@ if $LONG && [[ "$KIRO_MODEL_FLAG" != "claude-haiku-4.5" ]]; then
   KIRO_MODEL_FLAG="${KIRO_MODEL_FLAG:-claude-opus-4.6}-1m"
 fi
 TASK="${1:?Usage: $0 \"<task description>\" (try --help)}"
+if $WORKTREE && [[ -z "$WORKTREE_BRANCH" ]] && ! $CONTINUE; then
+  echo "Error: --branch is required for worktree runs." >&2
+  exit 1
+fi
 
 # ─── Paths & tokens ──────────────────────────────────────────────────────────
 
@@ -371,6 +379,21 @@ CURRENT_DIFF=""
 AGENT_TIMEOUT="30m"
 REPOMAP=""
 [[ -f "REPOMAP.md" ]] && REPOMAP=$(<"REPOMAP.md")
+ORIG_DIR="$PWD"
+WORKTREE_DIR=""
+RALPH_RUN_BRANCH="${WORKTREE_BRANCH:-ralph/$(date +%Y%m%d-%H%M%S)}"
+# Ensure unique run ID if another run started in the same second
+while [[ -z "$WORKTREE_BRANCH" && -d ".ralph/runs/${RALPH_RUN_BRANCH//\//-}" ]]; do
+  sleep 1
+  RALPH_RUN_BRANCH="ralph/$(date +%Y%m%d-%H%M%S)"
+done
+if [[ -n "$WORKTREE_BRANCH" ]]; then
+  RALPH_RUN_ID="ralph-${WORKTREE_BRANCH//\//-}-$(date +%Y%m%d-%H%M%S)"
+else
+  RALPH_RUN_ID="${RALPH_RUN_BRANCH//\//-}"
+fi
+RALPH_RUN_DIR=".ralph/runs/$RALPH_RUN_ID"
+RALPH_WORKTREE_FILE="$RALPH_RUN_DIR/worktree-dir"
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -388,6 +411,45 @@ exec "$real_git" "\$@"
 WRAPPER
   chmod +x "$GIT_WRAPPER_DIR/git"
   export PATH="$GIT_WRAPPER_DIR:$PATH"
+}
+
+setup_worktree() {
+  $WORKTREE || return 0
+  git rev-parse --is-inside-work-tree &>/dev/null || { echo "Warning: not a git repo, skipping worktree." >&2; WORKTREE=false; return 0; }
+
+  local branch="$RALPH_RUN_BRANCH"
+  WORKTREE_DIR="${ORIG_DIR}/${RALPH_RUN_DIR}/worktree"
+
+  # Create run directory, branch + worktree
+  mkdir -p "${ORIG_DIR}/${RALPH_RUN_DIR}"
+  git branch "$branch" HEAD 2>/dev/null || true
+  git worktree add -q "$WORKTREE_DIR" "$branch"
+  echo "$WORKTREE_DIR" > "$RALPH_WORKTREE_FILE"
+
+  # Copy context files (may be gitignored)
+  for f in "$ORIG_DIR"/REPOMAP*.md "$ORIG_DIR"/.project_state; do
+    [[ -f "$f" ]] && cp "$f" "$WORKTREE_DIR/"
+  done
+
+  # Transfer dirty state: staged + unstaged + untracked
+  local stash_ref=$(git -C "$ORIG_DIR" stash create 2>/dev/null || true)
+  if [[ -n "$stash_ref" ]]; then
+    git -C "$WORKTREE_DIR" stash apply --quiet "$stash_ref" 2>/dev/null || true
+  fi
+  # Untracked files — tar to preserve paths
+  local untracked=$(git -C "$ORIG_DIR" ls-files --others --exclude-standard)
+  if [[ -n "$untracked" ]]; then
+    echo "$untracked" | tar -cf - -C "$ORIG_DIR" -T - 2>/dev/null | tar -xf - -C "$WORKTREE_DIR" 2>/dev/null || true
+  fi
+
+  cd "$WORKTREE_DIR"
+  echo "📂 Worktree: $WORKTREE_DIR (branch: $branch)"
+}
+
+cleanup_worktree() {
+  # Worktree preserved for inspection and --continue.
+  [[ -n "$WORKTREE_DIR" && -d "$WORKTREE_DIR" ]] || return 0
+  echo "📂 Worktree preserved: $WORKTREE_DIR"
 }
 
 cleanup() {
@@ -481,7 +543,15 @@ snapshot_post() {
   build_diff
   echo "$CURRENT_DIFF" > "$RALPH_DIFF"
   if [[ -s "$RALPH_DIFF" ]]; then
-    echo "\n📄 Agent diff saved to $RALPH_DIFF"
+    # In worktree mode, copy diff to original directory for easy git apply
+    if [[ -n "$WORKTREE_DIR" && "$PWD" == "$WORKTREE_DIR"* ]]; then
+      local out_diff="$ORIG_DIR/${RALPH_RUN_DIR}/diff"
+      cp "$RALPH_DIFF" "$out_diff"
+      echo "\n📄 Agent diff saved to $out_diff"
+      echo "   Apply with: cd $ORIG_DIR && git apply ${RALPH_RUN_DIR}/diff"
+    else
+      echo "\n📄 Agent diff saved to $RALPH_DIFF"
+    fi
   else
     rm -f "$RALPH_DIFF"
     echo "\n📄 No file changes detected."
@@ -1032,11 +1102,13 @@ EOF
 mkdir -p .ralph/prompts
 setup_git_wrapper
 cleanup
-if [[ -f "$RALPH_LOCK" ]] && kill -0 "$(<"$RALPH_LOCK")" 2>/dev/null; then
-  echo "Error: another ralph-loop is already running (PID $(<"$RALPH_LOCK"))." >&2
-  exit 1
+if ! $WORKTREE; then
+  if [[ -f "$RALPH_LOCK" ]] && kill -0 "$(<"$RALPH_LOCK")" 2>/dev/null; then
+    echo "Error: another ralph-loop is already running (PID $(<"$RALPH_LOCK"))." >&2
+    exit 1
+  fi
+  echo $$ > "$RALPH_LOCK"
 fi
-echo $$ > "$RALPH_LOCK"
 trap cleanup EXIT
 trap on_interrupt INT
 
@@ -1051,6 +1123,8 @@ if $CONTINUE; then
 
 ADDITIONAL INSTRUCTIONS (--continue):
 $TASK"
+else
+  setup_worktree
 fi
 
 if $PLAN_MODE; then
@@ -1142,6 +1216,7 @@ while true; do
     fi
 
     snapshot_post
+    cleanup_worktree
     log_timing "Total" $((SECONDS - LOOP_START))
     exit 0
   fi
