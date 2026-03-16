@@ -888,7 +888,7 @@ EOF
 worker_prompt() {
   local agent_history=$(fmt_agent_history)
   local file_contents_block=$(build_file_contents_block)
-  local verify_rule=""
+  local external_block=$(fmt_external_changes_block)
   [[ -n "$VERIFY_CMD" ]] && verify_rule="- A verification command (\`$VERIFY_CMD\`) will be run automatically by the runtime after you signal completion. Do NOT run it yourself. If it fails, the output will be passed back to you in a subsequent round. Just focus on the task and signal done when ready."
 
   local continuation="" context_block=""
@@ -941,6 +941,8 @@ $agent_history
 </agent_history>
 ${file_contents_block:+
 $file_contents_block}
+${external_block:+
+$external_block}
 
 RULES:
 - Do NOT read, cat, sed, or open any file whose contents appear in XML blocks above (<file_content>, <diff>, <project_structure>) — not even partial or targeted reads. These reflect the current contents on disk at agent start and will not change during your runtime unless you change them (which you should not). Re-reading them in any form wastes time and context.
@@ -952,6 +954,12 @@ RULES:
 - Do NOT write the token until you are confident the task is done.
 - If the task is NOT done yet, do as much as you can this round. Do NOT write the token.
 - ALWAYS write a concise summary of what you did this round to "$AGENT_MSG" (overwrite, not append). Include: changes made, files modified (list every file path), and current status.
+- The working tree may contain pre-existing uncommitted changes or edits made by the user during runtime. Preserve them — do not revert, overwrite, or undo changes you did not make. Only modify code that is directly relevant to your task.
+- When the task says "all" or "every", it means exhaustive — enumerate the full set first, then process each item. Do not sample or stop partway.
+- Before creating new helpers, utilities, fixtures, or abstractions, search the codebase for existing ones. Reuse what exists.
+- For large outputs (plans, docs, multi-file changes), write incrementally in small sections. Do not build everything in memory and dump at once — timeouts lose all progress.
+- When tests fail, apply Occam's razor: the most likely issue is in the test code itself (wrong types, bad assertions, stale mocks), not in the production code. Verify the test is correct before changing production code.
+- Tests must verify actual business logic or behavior. Remove or replace tests that are effectively no-ops (e.g., asserting a mock returns what it was told to return), duplicates of other tests, or tests that don't exercise any real code path. Every test should break if the behavior it guards changes.
 ${verify_rule:+$verify_rule}
 
 $(loop_context_tips worker)
@@ -995,6 +1003,7 @@ $SHELL_RULES
 
 CRITICAL: Do NOT read, cat, sed, or open any file whose contents appear in XML blocks above (<file_content>, <diff>, <verify_output>) — not even partial or targeted reads. These reflect the current contents on disk at agent start and will not change during your runtime unless you change them (which you should not). Re-reading them in any form wastes time and context. Only read files NOT already provided when you need additional context.
 
+SCOPE: The diff and file contents above reflect only agent changes — pre-existing uncommitted changes and user runtime edits are excluded. Only verify what the agent did. Do not flag issues in code the agent did not touch.
 
 1. AVENUE AUDIT: List every distinct approach, strategy, or angle that could apply to this task. For each, check whether the worker explored or consciously dismissed it. Flag any avenue that was neither explored nor justified as skipped.
 
@@ -1005,6 +1014,8 @@ CRITICAL: Do NOT read, cat, sed, or open any file whose contents appear in XML b
 4. ALTERNATIVE APPROACHES: Was there a simpler, more robust, or more idiomatic way to accomplish the task that the worker missed? If so, is the chosen approach still acceptable or should it be reconsidered?
 
 5. MISSING PERSPECTIVES: Step outside the immediate code changes. Are there user-facing implications, documentation needs, configuration changes, or operational concerns that were overlooked?
+
+6. WORK QUALITY: Did the worker reuse existing code, helpers, and fixtures instead of creating redundant ones? When the task said "all" or "every", did the worker enumerate and address the full set? If tests were written or modified, does every test verify actual business logic — not just mock wiring, trivial assertions, or duplicates of other tests?
 
 DEFAULT STANCE: Assume something was missed until you've verified otherwise. Better to send the worker back for one more round of consideration than to let a blind spot through.
 
@@ -1054,6 +1065,7 @@ $SHELL_RULES
 
 CRITICAL: Do NOT read, cat, sed, or open any file whose contents appear in XML blocks above (<file_content>, <diff>, <verify_output>) — not even partial or targeted reads. These reflect the current contents on disk at agent start and will not change during your runtime unless you change them (which you should not). Re-reading them in any form wastes time and context. Only read files NOT already provided when you need additional context.
 
+SCOPE: The diff and file contents above reflect only agent changes — pre-existing uncommitted changes and user runtime edits are excluded. Only verify what the agent did. Do not flag issues in code the agent did not touch.
 
 1. REQUIREMENT DECOMPOSITION: Re-read the original task word by word. Break it into an explicit numbered checklist of every individual ask, requirement, constraint, and implicit expectation. Do not paraphrase — use the original wording. Then verify EACH item against the actual code. Mark each PASS or FAIL with evidence (file path + line or snippet).
 
@@ -1076,8 +1088,12 @@ CRITICAL: Do NOT read, cat, sed, or open any file whose contents appear in XML b
    - No orphaned imports, variables, functions, or files
    - No partial implementations (function declared but not wired up)
    - No hardcoded values that should be configurable
+   - No newly created helpers, fixtures, or abstractions that duplicate existing ones
+   - When the task said "all" or "every", verify the FULL set was addressed — not a subset
 
 6. OMISSION CHECK: Step back from the checklist. Is there anything the task OBVIOUSLY needs that wasn't explicitly stated but would be expected by a competent developer? Missing error handling, missing validation, missing edge cases, missing logging — if it's an obvious omission, it's a FAIL.
+
+7. TEST QUALITY (if tests were written or modified): Every test must verify actual business logic or behavior. Flag tests that are effectively no-ops (asserting a mock returns what it was configured to return), duplicates of other tests, or tests that exercise no real code path. Tests should break if the guarded behavior changes — if they can't, they're useless.
 
 DEFAULT STANCE: Assume the work is incomplete until proven otherwise. Your job is to find problems, not to rubber-stamp. When in doubt, FAIL. A false rejection costs one more worker round. A false approval ships broken code.
 
