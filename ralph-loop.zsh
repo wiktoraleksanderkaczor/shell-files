@@ -516,6 +516,7 @@ cleanup() {
 
 on_interrupt() {
   echo "\n\n⚠ Interrupted. Preserving state for --continue..."
+  stage_new_untracked 2>/dev/null || true
   build_diff 2>/dev/null || true
   [[ -n "$CURRENT_DIFF" ]] && echo "$CURRENT_DIFF" > "$RALPH_DIFF"
   [[ -n "${LOOP_START:-}" ]] && log_timing "Total (interrupted)" $((SECONDS - LOOP_START))
