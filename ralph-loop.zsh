@@ -601,6 +601,7 @@ snapshot_pre() {
 }
 
 snapshot_post() {
+  stage_new_untracked
   build_diff
   echo "$CURRENT_DIFF" > "$RALPH_DIFF"
   if [[ -s "$RALPH_DIFF" ]]; then
