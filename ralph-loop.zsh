@@ -407,7 +407,30 @@ while [[ -z "$WORKTREE_BRANCH" && -d ".ralph/runs/${RALPH_RUN_BRANCH//\//-}" ]];
   sleep 1
   RALPH_RUN_BRANCH="ralph/$(date +%Y%m%d-%H%M%S)"
 done
-if [[ -n "$WORKTREE_BRANCH" ]]; then
+if $CONTINUE && [[ -n "$WORKTREE_BRANCH" ]]; then
+  # Find existing run for this branch
+  local branch_slug="ralph-${WORKTREE_BRANCH//\//-}-"
+  local -a matching=(.ralph/runs/${branch_slug}*/worktree-dir(N))
+  if (( ${#matching} == 1 )); then
+    RALPH_RUN_DIR="${matching[1]:h}"
+    RALPH_RUN_ID="${RALPH_RUN_DIR##*/}"
+  elif (( ${#matching} > 1 )); then
+    echo "Multiple runs match --branch $WORKTREE_BRANCH:" >&2
+    local i
+    for i in {1..${#matching}}; do echo "  $i) ${${matching[$i]:h}##*/}" >&2; done
+    local choice=""
+    while [[ -z "$choice" ]]; do
+      echo -n "Select run [1-${#matching}]: " >&2
+      read -r choice
+      (( choice >= 1 && choice <= ${#matching} )) 2>/dev/null || { choice=""; echo "Invalid choice." >&2; }
+    done
+    RALPH_RUN_DIR="${matching[$choice]:h}"
+    RALPH_RUN_ID="${RALPH_RUN_DIR##*/}"
+  else
+    echo "Error: no prior run found for --branch $WORKTREE_BRANCH." >&2
+    exit 1
+  fi
+elif [[ -n "$WORKTREE_BRANCH" ]]; then
   RALPH_RUN_ID="ralph-${WORKTREE_BRANCH//\//-}-$(date +%Y%m%d-%H%M%S)"
 else
   RALPH_RUN_ID="${RALPH_RUN_BRANCH//\//-}"
