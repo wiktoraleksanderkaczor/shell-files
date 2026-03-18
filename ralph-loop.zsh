@@ -1018,7 +1018,7 @@ reflect_prompt() {
   local diff_block=$(fmt_agent_diff_block)
   local files_block=$(fmt_files_block)
   local verify_block=$(fmt_verify_block)
-  local file_contents_block=$(build_file_contents_block)
+  local file_contents_block="$1"
   local delta_block=$(fmt_worker_delta_block)
   cat <<EOF
 You are the REFLECTION agent. A worker agent claims it completed this task:
@@ -1082,7 +1082,7 @@ gate_prompt() {
   local diff_block=$(fmt_agent_diff_block)
   local files_block=$(fmt_files_block)
   local verify_block=$(fmt_verify_block)
-  local file_contents_block=$(build_file_contents_block)
+  local file_contents_block="$1"
   local delta_block=$(fmt_worker_delta_block)
   cat <<EOF
 You are the GATE-CHECK agent. A worker agent claims it completed this task:
@@ -1289,10 +1289,13 @@ while true; do
     { echo "── Verify (exit $verify_exit) ──"; cat "$VERIFY_OUTPUT"; } | tee -a "$AGENT_LOG" >> "$GATE_LOG"
   fi
 
+  # Cache file contents once for reflect + gate (files don't change between them)
+  local file_contents_cache=$(build_file_contents_block)
+
   # --- Reflection phase ---
   rm -f "$REFLECT_SIGNAL" "$AGENT_MSG"
   echo "\n── Reflection: considering all avenues... ──\n"
-  run_agent "reflection" "Reflection" "$(reflect_prompt)"
+  run_agent "reflection" "Reflection" "$(reflect_prompt "$file_contents_cache")"
   if [[ -f "$AGENT_MSG" ]]; then
     { echo "── Reflection ──"; cat "$AGENT_MSG"; } | tee -a "$AGENT_LOG" >> "$GATE_LOG"
   fi
@@ -1306,7 +1309,7 @@ while true; do
 
   # --- Gate phase ---
   rm -f "$GATE_SIGNAL" "$AGENT_MSG"
-  run_agent "gate" "Gate-Check" "$(gate_prompt)"
+  run_agent "gate" "Gate-Check" "$(gate_prompt "$file_contents_cache")"
   if [[ -f "$AGENT_MSG" ]]; then
     { echo "── Gate-Check ──"; cat "$AGENT_MSG"; } | tee -a "$AGENT_LOG" >> "$GATE_LOG"
   fi
