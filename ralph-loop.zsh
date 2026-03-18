@@ -796,16 +796,20 @@ fmt_external_changes_block() {
   local all_changed
   all_changed=$(echo "$CURRENT_DIFF" | grep -oE '^diff --git a/.* b/(.*)' | sed 's|^diff --git a/.* b/||' | sort -u)
   [[ -n "$all_changed" ]] || return 0
+  # Load worker files into associative array for O(1) lookup
+  local -A wf_set=()
+  if [[ -s "$WORKER_FILES" ]]; then
+    while IFS= read -r line; do
+      [[ -n "$line" ]] && wf_set[$line]=1
+    done < "$WORKER_FILES"
+  fi
   local external=""
   while IFS= read -r f; do
     [[ -f "$f" ]] || continue
-    if [[ -s "$WORKER_FILES" ]]; then
-      grep -qxF "$f" "$WORKER_FILES" && continue
-      grep -qxF "$PWD/$f" "$WORKER_FILES" && continue
-    fi
-    local stat_line=$(git diff --stat "$BASELINE" -- "$f" 2>/dev/null | head -1)
+    (( ${+wf_set[$f]} )) && continue
+    (( ${+wf_set[$PWD/$f]} )) && continue
     local mtime=$(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "$f" 2>/dev/null)
-    external+="  $f  (modified: ${mtime:-unknown})  ${stat_line:+— $stat_line}"$'\n'
+    external+="  $f  (modified: ${mtime:-unknown})"$'\n'
   done <<< "$all_changed"
   [[ -n "$external" ]] || return 0
   cat <<EOF
