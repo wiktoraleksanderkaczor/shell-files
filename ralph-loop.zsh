@@ -1260,8 +1260,8 @@ while true; do
     if [[ -f "$AGENT_MSG" ]]; then
       { echo "── Worker Round $round ──"; cat "$AGENT_MSG"; } | tee -a "$AGENT_LOG" >> "$WORKER_LOG"
     fi
-    build_diff
     stage_new_untracked
+    build_diff
 
     if check_signal "$WORKER_SIGNAL" "$WORKER_TOKEN"; then
       echo "\n✓ Worker signaled completion. Running gate-check...\n"
