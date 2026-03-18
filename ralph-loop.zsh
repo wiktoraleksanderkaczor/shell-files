@@ -620,11 +620,7 @@ snapshot_post() {
 }
 
 stage_new_untracked() {
-  local f
-  while IFS= read -r f; do
-    [[ -z "$f" ]] && continue
-    git add -N "$f"
-  done <<< "$(new_untracked_files)"
+  new_untracked_files | xargs -r git add -N 2>/dev/null || true
 }
 
 # ─── Kiro runner (with retry) ────────────────────────────────────────────────
