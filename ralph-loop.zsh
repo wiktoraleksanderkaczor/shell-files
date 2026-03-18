@@ -855,6 +855,30 @@ $block
 EOF
 }
 
+# Batched md5: reads file paths from stdin, outputs "hash  path" lines.
+# Filters to existing regular files, batches via xargs to minimize process spawns.
+batch_md5() {
+  local tmp=$(mktemp)
+  while IFS= read -r f; do
+    [[ -f "$f" ]] && echo "$f"
+  done > "$tmp"
+  if [[ -s "$tmp" ]]; then
+    xargs md5 -r < "$tmp" | sed 's/ /  /'
+  fi
+  rm -f "$tmp"
+}
+
+# Compares current checksums against a manifest, outputs changed/new file paths.
+# Usage: diff_against_manifest <manifest_file> < <file_list>
+diff_against_manifest() {
+  local manifest=$1 tmp_cur=$(mktemp)
+  batch_md5 > "$tmp_cur"
+  # Load manifest into an awk lookup, emit paths where hash differs or is absent
+  awk -F'  ' 'NR==FNR { prev[$2]=$1; next } { if ($1 != prev[$2]) print $2 }' \
+    "$manifest" "$tmp_cur"
+  rm -f "$tmp_cur"
+}
+
 # Snapshots md5 checksums of all tracked + dirty files before a worker round.
 save_pre_round_manifest() {
   local tmp="${PRE_ROUND_MANIFEST}.tmp"
