@@ -1240,7 +1240,11 @@ fi
 mkdir -p "$RALPH_STATE/prompts"
 
 if $PLAN_MODE; then
-  TASK="PLAN-ONLY MODE: You MAY read any code files to understand the codebase, but do NOT create, modify, or delete any project files except $PWD/plan.md. Your sole output is a markdown plan document at $PWD/plan.md. When writing anything to the plan, do so in sections. Keep each section focused and concise — break large sections into smaller subsections. Research the codebase as needed, then write a detailed implementation plan for the following task:
+  TASK="PLAN-ONLY MODE: You MAY read any code files to understand the codebase, but do NOT create, modify, or delete any project files except $PWD/plan.md. Your sole output is a markdown plan document at $PWD/plan.md. When writing anything to the plan, do so in sections. Keep each section focused and concise — break large sections into smaller subsections. Research the codebase as needed, then write a detailed implementation plan for the following task.
+
+CODE REQUIREMENT: Every plan step that involves code changes MUST include the actual production-ready implementation code in fenced code blocks — not pseudocode, not summaries, not descriptions of what to write. Show the exact code that would be written, with correct imports, types, error handling, and integration with existing code. The plan should be directly copy-pasteable into the codebase. Only use pseudocode if the user explicitly requests it.
+
+Task:
 
 $TASK"
 fi
