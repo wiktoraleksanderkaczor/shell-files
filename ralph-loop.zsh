@@ -532,12 +532,17 @@ on_interrupt() {
 
 # Returns new untracked files (not in PRE_UNTRACKED, not under .ralph/).
 new_untracked_files() {
-  local all=$(git ls-files --others --exclude-standard 2>/dev/null)
-  while IFS= read -r f; do
+  local -A pre_set=()
+  local line
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && pre_set[$line]=1
+  done <<< "$PRE_UNTRACKED"
+  local f
+  git ls-files --others --exclude-standard 2>/dev/null | while IFS= read -r f; do
     [[ -z "$f" || "$f" == .ralph/* ]] && continue
-    echo "$PRE_UNTRACKED" | grep -qxF "$f" && continue
+    (( ${+pre_set[$f]} )) && continue
     echo "$f"
-  done <<< "$all"
+  done
 }
 
 # Builds cumulative diff (tracked changes + new untracked files) into CURRENT_DIFF.
