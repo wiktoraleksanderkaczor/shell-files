@@ -992,6 +992,7 @@ ${file_contents_block:+
 $file_contents_block}
 ${external_block:+
 $external_block}
+$(if $INCLUDE_FILES && [[ -z "$file_contents_block" ]]; then echo "NOTE: No file contents inlined yet. Files you read this round will be automatically inlined in future round prompts — no need to re-read them."; fi)
 
 RULES:
 - Do NOT read, cat, sed, or open any file whose contents appear in XML blocks above (<file_content>, <diff>, <project_structure>) — not even partial or targeted reads. These reflect the current contents on disk at agent start and will not change during your runtime unless you change them (which you should not). Re-reading them in any form wastes time and context.
