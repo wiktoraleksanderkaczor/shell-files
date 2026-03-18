@@ -712,12 +712,13 @@ loop_context_tips() {
   case "$1" in
     worker)
       cat <<EOF
-LOOP CONTEXT TIPS — include these in your "$AGENT_MSG" summary so future rounds (yours, reflection, and gate) can work faster:
+LOOP CONTEXT TIPS — include these in your "$AGENT_MSG" summary so future rounds (yours, reflection, and gate) can work faster. This summary is your primary memory across rounds — your next round sees ONLY this and the agent history, so be thorough:
 - Commands that failed and why (exact command, error message, root cause if known)
 - Key file locations discovered (e.g., "config lives in src/config/app.ts", "tests are in __tests__/")
 - Shortcuts for finding things (e.g., "grep -r 'AuthProvider' src/ to find all auth usage")
 - Patterns or conventions observed in the codebase (e.g., "all API handlers follow handler(req, res) signature")
 - Dead ends explored and why they didn't work — save the next round from repeating them
+- If splitting work across rounds: what's done, what's next, and any setup/context the next round needs to hit the ground running
 EOF
       ;;
     gate)
