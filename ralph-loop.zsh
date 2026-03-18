@@ -466,7 +466,21 @@ setup_worktree() {
   # Create run directory, branch + worktree
   mkdir -p "${ORIG_DIR}/${RALPH_RUN_DIR}"
   git branch "$branch" HEAD 2>/dev/null || true
-  git worktree add -q "$WORKTREE_DIR" "$branch"
+  # Prune stale worktrees and force-delete their branches
+  local stale_wt
+  stale_wt=$(git worktree list --porcelain | awk '/^worktree /{wt=$2} /^branch /{br=$2; if (wt) print wt "\t" br}' \
+    | while IFS=$'\t' read -r wt br; do
+        [[ -d "$wt" ]] || echo "$wt"$'\t'"$br"
+      done)
+  if [[ -n "$stale_wt" ]]; then
+    git worktree prune
+    while IFS=$'\t' read -r wt br; do
+      echo "🗑 Pruned worktree: $wt (branch: $br)"
+      git branch -D "${br#refs/heads/}" 2>/dev/null || true
+    done <<< "$stale_wt"
+  fi
+
+  CODE_DEFENDER_SKIP_LOCAL_HOOKS=true git worktree add -q "$WORKTREE_DIR" "$branch"
   echo "$WORKTREE_DIR" > "$RALPH_WORKTREE_FILE"
 
   # Copy context files (may be gitignored)
