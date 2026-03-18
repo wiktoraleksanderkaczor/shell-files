@@ -885,10 +885,7 @@ save_pre_round_manifest() {
   { git diff --name-only "$BASELINE" -- ':!.ralph/*' 2>/dev/null
     git ls-files -- ':!.ralph/*' 2>/dev/null
     new_untracked_files
-  } | sort -u | while IFS= read -r f; do
-    [[ -f "$f" ]] || continue
-    echo "$(md5 -q "$f")  $f"
-  done > "$tmp"
+  } | sort -u | batch_md5 > "$tmp"
   mv "$tmp" "$PRE_ROUND_MANIFEST"
 }
 
@@ -897,23 +894,14 @@ files_changed_in_round() {
   [[ -f "$PRE_ROUND_MANIFEST" ]] || return 0
   { git diff --name-only "$BASELINE" -- ':!.ralph/*' 2>/dev/null
     new_untracked_files
-  } | sort -u | while IFS= read -r f; do
-    [[ -f "$f" ]] || continue
-    local cur=$(md5 -q "$f")
-    local prev=$(grep -F "  $f" "$PRE_ROUND_MANIFEST" | head -1 | cut -d' ' -f1)
-    [[ "$cur" == "$prev" ]] || echo "$f"
-  done
+  } | sort -u | diff_against_manifest "$PRE_ROUND_MANIFEST"
 }
 
 # Saves md5 checksums of all worker files for delta tracking.
 save_verified_manifest() {
   [[ -s "$WORKER_FILES" ]] || return 0
   local tmp="${VERIFIED_MANIFEST}.tmp"
-  > "$tmp"
-  while IFS= read -r f; do
-    [[ -f "$f" ]] || continue
-    echo "$(md5 -q "$f")  $f" >> "$tmp"
-  done < "$WORKER_FILES"
+  batch_md5 < "$WORKER_FILES" > "$tmp"
   mv "$tmp" "$VERIFIED_MANIFEST"
 }
 
@@ -921,16 +909,10 @@ save_verified_manifest() {
 build_worker_delta() {
   [[ -s "$WORKER_FILES" ]] || return 0
   if [[ ! -f "$VERIFIED_MANIFEST" ]]; then
-    # No prior manifest — all files are new
     cat "$WORKER_FILES"
     return 0
   fi
-  while IFS= read -r f; do
-    [[ -f "$f" ]] || continue
-    local cur=$(md5 -q "$f")
-    local prev=$(grep -F "  $f" "$VERIFIED_MANIFEST" | head -1 | cut -d' ' -f1)
-    [[ "$cur" == "$prev" ]] || echo "$f"
-  done < "$WORKER_FILES"
+  diff_against_manifest "$VERIFIED_MANIFEST" < "$WORKER_FILES"
 }
 
 fmt_worker_delta_block() {
