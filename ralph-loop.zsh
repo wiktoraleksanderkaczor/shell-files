@@ -545,16 +545,11 @@ new_untracked_files() {
   done
 }
 
-# Builds cumulative diff (tracked changes + new untracked files) into CURRENT_DIFF.
+# Builds cumulative diff (tracked changes + intent-to-add files) into CURRENT_DIFF.
+# Requires stage_new_untracked to have run first so new files are visible to git diff.
 build_diff() {
   CURRENT_DIFF=$(git diff --text "$BASELINE" -- ':!.ralph/*' 2>/dev/null \
     | LC_ALL=C tr -cd '[:print:]\t\n' || true)
-  local f
-  while IFS= read -r f; do
-    [[ -z "$f" ]] && continue
-    CURRENT_DIFF+=$'\n'"$(git diff --text --no-index /dev/null "$f" 2>/dev/null \
-      | LC_ALL=C tr -cd '[:print:]\t\n' || true)"
-  done <<< "$(new_untracked_files)"
 }
 
 log_timing() {
