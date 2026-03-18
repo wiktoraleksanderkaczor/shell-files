@@ -1,6 +1,6 @@
 #!/usr/bin/env zsh
 # Ralph Loop — dual-agent iteration via Kiro CLI
-# Worker agent iterates on a task until self-reporting done.
+# Worker agent iterates on a task, voluntarily splitting work across rounds.
 # Gate agent independently verifies completion.
 #
 # KNOWN ISSUES & SOLUTIONS
@@ -258,8 +258,9 @@ DESCRIPTION
   Worker agent executes the task iteratively. Each round it receives the task
   description, the full agent log, and (on round 2+) the cumulative diff of all
   changes. Round 1 includes the project structure from REPOMAP.md if available.
-  It works until it self-reports completion by writing a signal token. If it
-  doesn't signal done, it loops automatically for another round.
+  It works until it self-reports completion by writing a signal token. It may
+  voluntarily split work across multiple rounds for better quality — each
+  round's summary carries forward as context for the next.
 
   Reflection agent runs after the worker signals completion. It receives the
   full task, agent log, cumulative diff, and worker file list. It checks for
@@ -956,7 +957,7 @@ $REPOMAP
     elif [[ "$last_header" == *"Reflection"* ]]; then
       continuation="You are resuming because the reflection agent found unexplored avenues or blind spots. Read the reflection feedback below and address every item."
     else
-      continuation="You are resuming because you did NOT write the completion token (\"$WORKER_TOKEN\") to \"$WORKER_SIGNAL\" last round. You must write exactly that token to that file when the task is fully complete. Review your prior progress below and continue."
+      continuation="You are continuing from a prior round (you chose not to signal completion yet, which is fine). Review your prior progress below and continue where you left off."
     fi
     if [[ -n "$CURRENT_DIFF" ]]; then
       context_block="CURRENT DIFF — cumulative from baseline ref in \`$RALPH_BASELINE_FILE\` (includes ALL prior rounds, not just yours). Verify with: \`git diff \$(cat $RALPH_BASELINE_FILE)\`
@@ -1000,8 +1001,8 @@ RULES:
 - File discovery commands (\`find\`, \`ls -R\`, \`git ls-files\`, \`grep -r\`, \`git grep\`) MUST be scoped to the narrowest relevant directory — never scan from repo root when you know the target subtree. Always wrap these with \`timeout\` (e.g., \`timeout 15 find src/auth -name '*.ts'\`).
 - When the task is FULLY COMPLETE, write EXACTLY the token "$WORKER_TOKEN" to the file "$WORKER_SIGNAL". The file must contain this token and nothing else — no explanation, no extra text.
 - Do NOT write the token until you are confident the task is done.
-- If the task is NOT done yet, do as much as you can this round. Do NOT write the token.
-- ALWAYS write a concise summary of what you did this round to "$AGENT_MSG" (overwrite, not append). Include: changes made, files modified (list every file path), and current status.
+- If the task is NOT done yet, do as much as you can this round. Do NOT write the token. You are encouraged to split work across multiple rounds for better quality — you do not need to finish everything in one go. You can decide to end your round at any point (even mid-task) by writing your summary and stopping. This is normal and expected for complex tasks.
+- ALWAYS write a concise summary of what you did this round to "$AGENT_MSG" (overwrite, not append). This is MANDATORY every round regardless of whether you signal completion. Include: changes made, files modified (list every file path), current status, what remains, issues encountered and how they were resolved, relevant findings for fixing problems, and key reasoning behind non-obvious decisions.
 - The working tree may contain pre-existing uncommitted changes or edits made by the user during runtime. Preserve them — do not revert, overwrite, or undo changes you did not make. Only modify code that is directly relevant to your task.
 - When the task says "all" or "every", it means exhaustive — enumerate the full set first, then process each item. Do not sample or stop partway.
 - Before creating new helpers, utilities, fixtures, or abstractions, search the codebase for existing ones. Reuse what exists.
@@ -1274,7 +1275,7 @@ while true; do
       echo "\n✓ Worker signaled completion. Running gate-check...\n"
       break
     fi
-    echo "\n⏳ Worker did not signal completion. Continuing...\n"
+    echo "\n⏳ Worker continuing to next round...\n"
   done
 
   # --- Verify phase ---
