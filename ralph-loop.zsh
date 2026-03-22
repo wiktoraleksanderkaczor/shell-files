@@ -576,8 +576,8 @@ snapshot_pre() {
       PRE_UNTRACKED=""
       [[ -f "$RALPH_PRE_UNTRACKED_FILE" ]] && PRE_UNTRACKED=$(<"$RALPH_PRE_UNTRACKED_FILE")
     else
-      BASELINE=$(git stash create 2>/dev/null || true)
-      [[ -z "$BASELINE" ]] && BASELINE=HEAD
+      BASELINE=$(git stash create 2>&1 | grep -xE '[0-9a-f]{40,}' || true)
+      [[ -z "$BASELINE" ]] && BASELINE=$(git rev-parse --verify HEAD 2>/dev/null || git hash-object -t tree /dev/null)
       PRE_UNTRACKED=$(git ls-files --others --exclude-standard)
       echo "$BASELINE" > "$RALPH_BASELINE_FILE"
       echo "$PRE_UNTRACKED" > "$RALPH_PRE_UNTRACKED_FILE"
