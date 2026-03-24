@@ -99,6 +99,17 @@
 #               gate prompts include a SCOPE instruction to ignore non-agent
 #               changes. Worker prompt includes a rule to preserve user changes.
 #
+# 13. --plan --continue ignores additional instructions
+#     Problem:  After a --plan run completes (gate passes), --plan --continue
+#               with new instructions was treated as already-complete. The worker
+#               saw plan.md on disk, agent history showing gate passed, and the
+#               task saying "write a plan" — so it signaled done immediately.
+#               Additionally, the plan-mode preamble nested on each --continue.
+#     Solution: Strip prior plan-mode wrapper from saved task before re-wrapping.
+#               Inject a REVISION MODE directive telling the worker to read the
+#               existing plan.md and revise it to incorporate the additional
+#               instructions, rather than treating it as complete.
+#
 # DESIGN DECISIONS
 # ================
 #
@@ -1233,7 +1244,7 @@ if $CONTINUE; then
   [[ -f "$RALPH_TASK" ]] && PRIOR_TASK=$(<"$RALPH_TASK")
   TASK="${PRIOR_TASK:-<no prior task — see agent history for context>}
 
-ADDITIONAL INSTRUCTIONS (--continue):
+ADDITIONAL INSTRUCTIONS (--continue, appended chronologically — latest takes precedence over earlier when conflicting):
 $TASK"
 else
   setup_worktree
@@ -1242,13 +1253,26 @@ fi
 mkdir -p "$RALPH_STATE/prompts"
 
 if $PLAN_MODE; then
-  TASK="PLAN-ONLY MODE: You MAY read any code files to understand the codebase, but do NOT create, modify, or delete any project files except $PWD/plan.md. Your sole output is a markdown plan document at $PWD/plan.md. When writing anything to the plan, do so in sections. Keep each section focused and concise — break large sections into smaller subsections. Research the codebase as needed, then write a detailed implementation plan for the following task.
+  # Strip prior plan-mode wrapper to avoid nesting on --continue
+  if $CONTINUE && [[ "$TASK" == "PLAN-ONLY MODE:"* ]]; then
+    TASK=$(echo "$TASK" | sed -E -e '1,/^(Task:|REVISION MODE:)/d' -e '/./,$!d')
+  fi
+  local plan_preamble="PLAN-ONLY MODE: You MAY read any code files to understand the codebase, but do NOT create, modify, or delete any project files except $PWD/plan.md. Your sole output is a markdown plan document at $PWD/plan.md. When writing anything to the plan, do so in sections. Keep each section focused and concise — break large sections into smaller subsections. Research the codebase as needed, then write a detailed implementation plan for the following task.
 
-CODE REQUIREMENT: Every plan step that involves code changes MUST include the actual production-ready implementation code in fenced code blocks — not pseudocode, not summaries, not descriptions of what to write. Show the exact code that would be written, with correct imports, types, error handling, and integration with existing code. The plan should be directly copy-pasteable into the codebase. Only use pseudocode if the user explicitly requests it.
+CODE REQUIREMENT: Every plan step that involves code changes MUST include the actual production-ready implementation code in fenced code blocks — not pseudocode, not summaries, not descriptions of what to write. Show the exact code that would be written, with correct imports, types, error handling, and integration with existing code. The plan should be directly copy-pasteable into the codebase. Only use pseudocode if the user explicitly requests it."
+  if $CONTINUE; then
+    TASK="$plan_preamble
+
+REVISION MODE: A prior plan exists at $PWD/plan.md. Read it, then revise it to incorporate the additional instructions below. Do NOT treat the prior plan as complete — the additional instructions require meaningful changes. Prefer surgical edits — update, extend, or replace specific sections rather than rewriting from scratch. Extensive surgical edits across many sections are fine; full rewrite is acceptable only when the instructions fundamentally change the plan's direction. Additional instruction blocks appear in chronological order below; later ones take precedence over earlier ones when conflicting.
+
+$TASK"
+  else
+    TASK="$plan_preamble
 
 Task:
 
 $TASK"
+  fi
 fi
 
 echo "$TASK" > "$RALPH_TASK"
