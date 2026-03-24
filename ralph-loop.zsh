@@ -508,7 +508,7 @@ setup_worktree() {
   # Untracked files — tar to preserve paths
   local untracked=$(git -C "$ORIG_DIR" ls-files --others --exclude-standard)
   if [[ -n "$untracked" ]]; then
-    echo "$untracked" | tar -cf - -C "$ORIG_DIR" -T - 2>/dev/null | tar -xf - -C "$WORKTREE_DIR" 2>/dev/null || true
+    echo "$untracked" | tar -cf - -C "$ORIG_DIR" --exclude='.ralph' -T - 2>/dev/null | tar -xf - -C "$WORKTREE_DIR" 2>/dev/null || true
   fi
 
   cd "$WORKTREE_DIR"
