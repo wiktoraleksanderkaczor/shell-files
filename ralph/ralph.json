@@ -1,0 +1,19 @@
+{
+  "name": "ralph",
+  "description": "Ralph agent with workflow hooks",
+  "tools": [
+    "write",
+    "shell",
+    "web_search",
+    "web_fetch",
+    "todo",
+    "code"
+  ],
+  "hooks": {},
+  "resources": [
+    "file://~/.kiro/steering/WORKFLOW.md",
+    "file://REPOMAP*.md",
+    "file://.project_state"
+  ],
+  "includeMcpJson": false
+}
