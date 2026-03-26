@@ -513,7 +513,7 @@ setup_worktree() {
   echo "$WORKTREE_DIR" > "$RALPH_WORKTREE_FILE"
 
   # Copy context files (may be gitignored)
-  for f in "$ORIG_DIR"/REPOMAP*.md "$ORIG_DIR"/.project_state; do
+  for f in "$ORIG_DIR"/REPOMAP*.md(N) "$ORIG_DIR"/.project_state(N); do
     [[ -f "$f" ]] && cp "$f" "$WORKTREE_DIR/"
   done
 
