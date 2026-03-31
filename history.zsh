@@ -1070,80 +1070,75 @@ _ranked_hist_import() {
 
 _ranked_hist_tune() {
   local now=$EPOCHREALTIME
-  local n_total n_accepted
-  n_total=$(_ranked_hist_sql "SELECT COUNT(*) FROM suggestion_log")
-  n_accepted=$(_ranked_hist_sql "SELECT COUNT(*) FROM suggestion_log WHERE accepted=1")
-  local n_rejected=$(( n_total - n_accepted ))
+  local n_cmds
+  n_cmds=$(_ranked_hist_sql "SELECT COUNT(*) FROM commands WHERE total_count > 0")
 
-  if (( n_total == 0 )); then
-    echo "No data. Enable with: RANKED_HIST_LOG_SUGGESTIONS=true"
+  if (( n_cmds < 20 )); then
+    echo "Need ≥20 commands for tuning (have $n_cmds)"
     return 1
   fi
 
-  printf 'Events: %d total, %d accepted (%d%%), %d rejected\n' \
-    "$n_total" "$n_accepted" "$(( n_accepted * 100 / n_total ))" "$n_rejected"
-
-  if (( n_total < 20 )); then
-    echo "Need ≥20 events for tuning (have $n_total)"
+  local script="$_RANKED_HIST_DIR/ranked-hist-tune.py"
+  if [[ ! -f "$script" ]]; then
+    echo "Missing: $script"
     return 1
   fi
 
-  echo "Grid-searching weights..."
+  echo "Extracting $n_cmds commands..."
 
   local result
-  result=$(_ranked_hist_sql \
-    "SELECT
-       sl.accepted,
-       1.0/(1.0 + ($now - cs.last_used_ts)/86400.0),
-       min(cs.total_count, 100)/100.0,
-       1.0/(1.0 + ($now - ce.last_used_ts)/86400.0),
-       min(ce.total_count, 100)/100.0
-     FROM suggestion_log sl
-     JOIN commands cs ON cs.cmd = sl.suggestion
-     JOIN commands ce ON ce.cmd = sl.executed" \
-  | awk -F'|' '
-    { acc[NR]=$1; sr[NR]=$2; sf[NR]=$3; er[NR]=$4; ef[NR]=$5; n=NR }
-    END {
-      if (n == 0) { print "NODATA"; exit }
-      best = -1
-      for (wr = 10; wr <= 70; wr += 5) {
-        for (wf = 5; wf <= 60; wf += 5) {
-          wp = 100 - wr - wf
-          if (wp < 5) continue
-          c = 0
-          for (i = 1; i <= n; i++) {
-            ss = wr*sr[i] + wf*sf[i]
-            es = wr*er[i] + wf*ef[i]
-            if (acc[i] ? ss >= es : es >= ss) c++
-          }
-          if (c > best) { best=c; bwr=wr; bwp=wp; bwf=wf }
-        }
-      }
-      printf "%.2f|%.2f|%.2f|%d|%d\n", bwr/100, bwp/100, bwf/100, best, n
-    }')
+  result=$({
+    sqlite3 -separator $'\t' -cmd ".timeout 1000" "$RANKED_HIST_DB" \
+      "SELECT c.id, c.last_used_ts, c.total_count, c.is_fragment, length(c.cmd)
+       FROM commands c WHERE c.total_count > 0"
+    echo "---"
+    sqlite3 -separator $'\t' -cmd ".timeout 1000" "$RANKED_HIST_DB" \
+      "SELECT cd.cmd_id, cd.dir, cd.dir_count, cd.last_used_in_dir_ts
+       FROM command_dirs cd
+       JOIN commands c ON c.id = cd.cmd_id
+       WHERE c.total_count > 0"
+  } | python3 "$script" "$now" \
+      "$RANKED_HIST_FRAGMENT_PENALTY" "$RANKED_HIST_LENGTH_THRESHOLD" \
+      "$RANKED_HIST_SIBLING_FACTOR" "$RANKED_HIST_DIR_DEPTH_DECAY" \
+      "$RANKED_HIST_W_RECENCY" "$RANKED_HIST_W_PWD" "$RANKED_HIST_W_FREQ")
 
-  if [[ "$result" == "NODATA" || -z "$result" ]]; then
-    echo "Could not match log entries to commands in DB"
+  if [[ -z "$result" ]]; then
+    echo "Tuning failed"
     return 1
   fi
 
-  local w_r w_p w_f correct total
-  IFS='|' read -r w_r w_p w_f correct total <<< "$result"
-  local pct=$(( correct * 100 / total ))
+  local w_r w_p w_f w_sf w_dd tuned_mrr cur_mrr n_events
+  IFS='|' read -r w_r w_p w_f w_sf w_dd tuned_mrr cur_mrr n_events <<< "$result"
 
-  printf 'Current weights:  W_RECENCY=%s  W_PWD=%s  W_FREQ=%s\n' \
-    "$RANKED_HIST_W_RECENCY" "$RANKED_HIST_W_PWD" "$RANKED_HIST_W_FREQ"
-  printf 'Tuned weights:    W_RECENCY=%s  W_PWD=%s  W_FREQ=%s\n' "$w_r" "$w_p" "$w_f"
-  printf 'Improvement: %d/%d rejected events (%d%%) would rank correctly\n' "$correct" "$total" "$pct"
+  printf 'Events:           %s (command × directory pairs, weighted by usage count)\n' "$n_events"
+  printf 'Current:          W_RECENCY=%s  W_PWD=%s  W_FREQ=%s  SIB=%s  DECAY=%s  (MRR=%.4f)\n' \
+    "$RANKED_HIST_W_RECENCY" "$RANKED_HIST_W_PWD" "$RANKED_HIST_W_FREQ" \
+    "$RANKED_HIST_SIBLING_FACTOR" "$RANKED_HIST_DIR_DEPTH_DECAY" "$cur_mrr"
+  printf 'Tuned:            W_RECENCY=%s  W_PWD=%s  W_FREQ=%s  SIB=%s  DECAY=%s  (MRR=%.4f)\n' \
+    "$w_r" "$w_p" "$w_f" "$w_sf" "$w_dd" "$tuned_mrr"
+
+  if (( $(printf '%s\n' "$tuned_mrr <= $cur_mrr" | bc -l) )); then
+    echo "Current weights are already optimal."
+    return 0
+  fi
+
+  local improvement
+  improvement=$(printf '%.1f' "$(printf '%s\n' "($tuned_mrr - $cur_mrr) / $cur_mrr * 100" | bc -l)")
+  printf 'Improvement:      +%s%% mean reciprocal rank\n' "$improvement"
 
   _ranked_hist_sql \
-    "INSERT INTO tuned_weights(id, w_recency, w_pwd, w_freq, acceptance_rate, sample_size, tuned_at)
-     VALUES(1, $w_r, $w_p, $w_f, $(( n_accepted * 100 / n_total )), $n_total, $now)
+    "INSERT INTO tuned_weights(id, w_recency, w_pwd, w_freq, sib_factor, depth_decay, acceptance_rate, sample_size, tuned_at)
+     VALUES(1, $w_r, $w_p, $w_f, $w_sf, $w_dd, $tuned_mrr, $n_events, $now)
      ON CONFLICT(id) DO UPDATE SET
-       w_recency=$w_r, w_pwd=$w_p, w_freq=$w_f,
-       acceptance_rate=$(( n_accepted * 100 / n_total )), sample_size=$n_total, tuned_at=$now"
+       w_recency=$w_r, w_pwd=$w_p, w_freq=$w_f, sib_factor=$w_sf, depth_decay=$w_dd,
+       acceptance_rate=$tuned_mrr, sample_size=$n_events, tuned_at=$now"
 
-  echo "Stored. Apply with: RANKED_HIST_USE_TUNED_WEIGHTS=true"
+  RANKED_HIST_W_RECENCY=$w_r
+  RANKED_HIST_W_PWD=$w_p
+  RANKED_HIST_W_FREQ=$w_f
+  RANKED_HIST_SIBLING_FACTOR=$w_sf
+  RANKED_HIST_DIR_DEPTH_DECAY=$w_dd
+  echo "Applied to current shell. Persist with: RANKED_HIST_USE_TUNED_WEIGHTS=true"
 }
 
 # --- Wire-up ---
@@ -1153,12 +1148,17 @@ _ranked_hist_init_db
 if [[ "$RANKED_HIST_USE_TUNED_WEIGHTS" == true ]]; then
   local _tw
   _tw=$(sqlite3 -cmd ".timeout 1000" "$RANKED_HIST_DB" \
-    "SELECT w_recency || '|' || w_pwd || '|' || w_freq FROM tuned_weights WHERE id=1" 2>/dev/null)
+    "SELECT w_recency || '|' || w_pwd || '|' || w_freq || '|' || COALESCE(sib_factor,'') || '|' || COALESCE(depth_decay,'') FROM tuned_weights WHERE id=1" 2>/dev/null)
   if [[ -n "$_tw" ]]; then
-    IFS='|' read -r RANKED_HIST_W_RECENCY RANKED_HIST_W_PWD RANKED_HIST_W_FREQ <<< "$_tw"
+    local _wr _wp _wf _sf _dd
+    IFS='|' read -r _wr _wp _wf _sf _dd <<< "$_tw"
+    RANKED_HIST_W_RECENCY=$_wr
+    RANKED_HIST_W_PWD=$_wp
+    RANKED_HIST_W_FREQ=$_wf
+    [[ -n "$_sf" ]] && RANKED_HIST_SIBLING_FACTOR=$_sf
+    [[ -n "$_dd" ]] && RANKED_HIST_DIR_DEPTH_DECAY=$_dd
   fi
-  # Re-tune in background on every shell startup
-  { _ranked_hist_tune } &>/dev/null &!
+  # Tuning is now an offline process — run manually via _ranked_hist_tune
 fi
 _ranked_hist_populate_ring
 zsh-defer _ranked_hist_load
