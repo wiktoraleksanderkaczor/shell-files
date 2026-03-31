@@ -93,9 +93,9 @@ Load project files, search for relevant code, and read files needed for the task
 - `.gitignore`, `.repoignore` — Ignore patterns
 - `README.md` — Project overview (if exists)
 - `REPOMAP.md` and `REPOMAP.*.md` — Repository structure maps (user-managed: do not modify)
-- `.project_state` — Project-specific configuration: directory structure, technology stack, cache/exclusion patterns, build/deployment patterns, naming conventions, user preferences
+- `AGENTS.md` — Project-specific configuration: directory structure, technology stack, cache/exclusion patterns, build/deployment patterns, naming conventions, user preferences
 
-If REPOMAP or `.project_state` missing, prompt user before proceeding with project edits.
+If REPOMAP or `AGENTS.md` missing, prompt user before proceeding with project edits.
 If required files missing: prompt user → **WAIT** → return to **INTERPRET REQUEST**.
 
 ### Tool Rules
@@ -103,7 +103,7 @@ If required files missing: prompt user → **WAIT** → return to **INTERPRET RE
 **Preferred Tools**:
 - `git grep` for all searches (`grep` aliased to `git grep`; avoid built-in search tools). Respects `.gitignore` automatically.
 - `cat -n` for reading files (always with line numbers; avoid built-in file-read tools unless shell access unavailable)
-- `find` for file discovery (avoid built-in file-listing tools). Always exclude: `dependencies/`, `cache/`, `.git/`, `node_modules/` — check `.project_state` for additions. Pattern: `{dependencies/**,cache/**,.git/**,node_modules/**}`. Be mindful of depth (`-maxdepth 2` or `3`).
+- `find` for file discovery (avoid built-in file-listing tools). Always exclude: `dependencies/`, `cache/`, `.git/`, `node_modules/` — check `AGENTS.md` for additions. Pattern: `{dependencies/**,cache/**,.git/**,node_modules/**}`. Be mindful of depth (`-maxdepth 2` or `3`).
 - `aws` CLI directly for AWS operations
 - Format-aware tools (`jq`, `xmllint`, `yq`) for structured data — not line-based tools
 - Never use output-limiting commands (`head`, `tail`, `more`, `less`)
@@ -186,7 +186,7 @@ Verify all workflow steps were followed (context loaded, searched comprehensivel
 
 Update documentation with learnings BEFORE marking complete. Update steering immediately when insights arise.
 
-**Routing**: Generic logic rules → this workflow. Language-specific patterns → language-specific files. Project-specific info → `.project_state` (directory structure, technology stack, cache/exclusion patterns, build/deployment patterns, naming conventions, user preferences). User preferences/feedback, failures/resolutions, workflow improvements → steering files. When unsure: ask "Is this specific to this project or a general pattern?"
+**Routing**: Generic logic rules → this workflow. Language-specific patterns → language-specific files. Project-specific info → `AGENTS.md` (directory structure, technology stack, cache/exclusion patterns, build/deployment patterns, naming conventions, user preferences). User preferences/feedback, failures/resolutions, workflow improvements → steering files. When unsure: ask "Is this specific to this project or a general pattern?"
 
 **Principles**: Keep documentation generic and tool-agnostic; separate project-specific from general knowledge. Make all examples adaptable to any project/tooling. Document at multiple levels: technical (solutions applied), process (approach taken), metacognitive (how thinking was structured). Regularly check for outdated/tool-specific/project-specific language in steering docs.
 
@@ -215,6 +215,7 @@ Steering updated: [Which files]
 Flags and detailed usage for shell tools referenced in GATHER CONTEXT. Only use flags documented here — do not guess or invent flags not listed. When unsure, check `--help` first.
 
 **Critical Tool Gotchas**:
+- In grep-like commands (`git grep`, `grep`, `rg`, `sed`, `awk`), place all flag arguments before positional arguments — mixing flags after patterns or filenames causes misparse
 - `git grep` uses basic POSIX regex by default; use `-E` for extended regex (`|`, `+`, `?` without escaping)
 - `git grep` only searches tracked files — untracked/gitignored files are invisible unless `--no-index` or `--untracked` is used
 - `sed -i ''` on macOS requires empty string for no-backup in-place edit
