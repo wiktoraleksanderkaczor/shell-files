@@ -185,7 +185,7 @@ docker_clean() {
 }
 
 # Default file click open
-alias -s py=code
+# alias -s py=code
 
 # Load functions
 source ~/.zsh/file-functions.zsh
