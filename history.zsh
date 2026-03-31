@@ -1,5 +1,41 @@
 # Ranked History — SQLite-backed scored history for zsh
 # Replaces history.zsh. Owns: recording, ring, suggestions, Ctrl-R, Ctrl-T, Alt-C, Opt+Up/Down.
+#
+# KNOWN ISSUES & SOLUTIONS
+# ========================
+#
+# 15. Commands lost on shell crash
+#     Problem:  DB write happened only in `precmd`. If the shell was killed or
+#               the command hung indefinitely, the command was never recorded.
+#     Solution: `zshaddhistory` now inserts the command row synchronously (no
+#               `&!` — single WAL INSERT is <5ms). `precmd` updates
+#               `last_exit_code` and `last_duration`, adds fragments and
+#               sequences. Unworthy commands (exit 127, short-lived failures)
+#               have their count decremented and are DELETEd if total_count
+#               drops to 0. Key queries also filter total_count > 0 as
+#               defense-in-depth.
+#     PWD semantics: `_cmd_start_dir` captures `$PWD` at command-issue time
+#               (in `zshaddhistory`). All `command_dirs` and
+#               `command_sequences` operations use issue-time PWD, not
+#               completion-time PWD. This is more correct for scoring —
+#               `cd /tmp` should record the directory where `cd` was typed,
+#               not `/tmp`. Behavioral change from prior code which used
+#               `$PWD` in `precmd` (completion-time).
+#     Trade-off: `last_used_ts` is bumped by `zshaddhistory` and not rolled
+#               back for unworthy commands. Recency boost from one failed
+#               invocation is minor — frequency drops to 0 and recency decays
+#               within hours.
+#     Gap:      In-memory buckets (`_RANKED_HIST_BUCKETS`) and global list
+#               (`_RANKED_HIST_GLOBAL_LIST`) are not cleaned when a command
+#               is deemed unworthy. `zshaddhistory` adds the command to the
+#               zsh ring via `print -s`, and the worthy branch populates
+#               buckets/global list — but the unworthy `else` branch only
+#               does DB cleanup. Until the next `_ranked_hist_load` (triggered
+#               by `chpwd` or cross-terminal sync), the unworthy command may
+#               appear in inline suggestions and Opt+Up/Down navigation.
+#               Accepted: `total_count > 0` defense-in-depth filter in
+#               `_ranked_hist_scored_query` ensures the next bucket reload
+#               excludes it, and `_ranked_hist_load` rebuilds the global list.
 
 zmodload zsh/datetime
 zmodload zsh/stat
@@ -21,8 +57,7 @@ zmodload zsh/stat
 : ${RANKED_HIST_EXPAND_ALIASES:=false}
 : ${RANKED_HIST_SEQ_DIR_BONUS:=0.6}
 : ${RANKED_HIST_SIBLING_FACTOR:=0.3}
-: ${RANKED_HIST_LOG_SUGGESTIONS:=true}
-: ${RANKED_HIST_USE_TUNED_WEIGHTS:=false}
+: ${RANKED_HIST_USE_TUNED_WEIGHTS:=true}
 
 # --- Global state ---
 typeset -gA _RANKED_HIST_BUCKETS=()
@@ -39,13 +74,13 @@ typeset -g _RANKED_HIST_US=$'\x1f'
 typeset -g _RANKED_HIST_NL=$'\n'
 typeset -g _pending_cmd=""
 typeset -g _cmd_start_time=""
+typeset -g _cmd_start_dir=""
 typeset -g _RANKED_HIST_LAST_CMD=""
 typeset -g _RANKED_HIST_PREV_CMD=""
 typeset -g _RANKED_HIST_NEXT_PREDICTION=""
 typeset -gi _RANKED_HIST_NEXT_PRED_COUNT=0
 typeset -gA _RANKED_HIST_PATH_CACHE=()
-typeset -g _RANKED_HIST_LAST_SUGGESTION=""
-typeset -g _RANKED_HIST_LAST_PREFIX=""
+typeset -g _RANKED_HIST_DIR="${${(%):-%x}:A:h}"
 
 # --- Override .zshrc history config ---
 HISTFILE=/dev/null
@@ -138,24 +173,24 @@ _ranked_hist_init_db() {
   fi
   if (( v < 5 )); then
     sqlite3 -cmd ".timeout 1000" "$RANKED_HIST_DB" "
-      CREATE TABLE IF NOT EXISTS suggestion_log (
-        ts         REAL    NOT NULL,
-        prefix     TEXT    NOT NULL,
-        suggestion TEXT    NOT NULL,
-        executed   TEXT    NOT NULL,
-        accepted   INTEGER NOT NULL,
-        dir        TEXT
-      );
       CREATE TABLE IF NOT EXISTS tuned_weights (
         id        INTEGER PRIMARY KEY CHECK(id = 1),
         w_recency REAL NOT NULL,
         w_pwd     REAL NOT NULL,
         w_freq    REAL NOT NULL,
+        sib_factor  REAL,
+        depth_decay REAL,
         acceptance_rate REAL,
         sample_size     INTEGER,
         tuned_at        REAL
       );
       PRAGMA user_version = 5;" >/dev/null 2>/dev/null
+  fi
+  if (( v < 6 )); then
+    sqlite3 -cmd ".timeout 1000" "$RANKED_HIST_DB" "
+      ALTER TABLE commands ADD COLUMN last_exit_code INTEGER;
+      ALTER TABLE commands ADD COLUMN last_duration REAL;
+      PRAGMA user_version = 6;" >/dev/null 2>/dev/null
   fi
 }
 
@@ -203,6 +238,7 @@ _ranked_hist_scored_query() {
         AND dir != '$pwd_esc'
       GROUP BY cmd_id
     ) sib ON sib.cmd_id = c.id
+    WHERE c.total_count > 0
     ORDER BY (
       $RANKED_HIST_W_RECENCY * (1.0 / (1.0 + ($now - c.last_used_ts) / 86400.0))
       + $RANKED_HIST_W_PWD * (COALESCE(pwd.pwd_score, 0.0) + $RANKED_HIST_SIBLING_FACTOR * COALESCE(sib.sib_score, 0.0))
@@ -274,6 +310,7 @@ fi
 zshaddhistory() {
   typeset -g _pending_cmd="${1%%$'\n'}"
   typeset -g _cmd_start_time=$EPOCHREALTIME
+  typeset -g _cmd_start_dir=$PWD
   # Honor HIST_IGNORE_SPACE — skip ring for space-prefixed commands
   if [[ -o HIST_IGNORE_SPACE && "$1" == [[:space:]]* ]]; then
     :
@@ -284,6 +321,33 @@ zshaddhistory() {
   if (( ${+functions[_ranked_hist_orig_zshaddhistory]} )); then
     _ranked_hist_orig_zshaddhistory "$@"
   fi
+
+  # Synchronous DB insert — command is persisted even if shell dies before precmd.
+  # Single WAL-mode INSERT is <5ms. Synchronous (no &!) is critical:
+  #   1. Crash resilience — async fork could die with the shell
+  #   2. Race prevention — precmd UPDATE must find the row; for near-instant
+  #      commands (true, echo, typos), precmd fires within milliseconds
+  local _zah_cmd="$_pending_cmd" _zah_now=$EPOCHREALTIME
+  if [[ -n "$_zah_cmd" ]] && ! [[ -o HIST_IGNORE_SPACE && "$_zah_cmd" == [[:space:]]* ]]; then
+    # Expand first-word alias to canonical form
+    if [[ "$RANKED_HIST_EXPAND_ALIASES" == true ]]; then
+      local _zah_first="${_zah_cmd%% *}"
+      if (( ${+aliases[$_zah_first]} )) && [[ "${aliases[$_zah_first]%% *}" != "$_zah_first" ]]; then
+        _zah_cmd="${aliases[$_zah_first]}${_zah_cmd#$_zah_first}"
+      fi
+    fi
+    _ranked_hist_sql \
+      "INSERT INTO commands(cmd, total_count, last_used_ts, first_used_ts)
+         VALUES(%s, 1, $_zah_now, $_zah_now)
+         ON CONFLICT(cmd) DO UPDATE SET
+           total_count = total_count + 1, last_used_ts = $_zah_now, is_fragment = 0;
+       INSERT INTO command_dirs(cmd_id, dir, dir_count, last_used_in_dir_ts)
+         VALUES((SELECT id FROM commands WHERE cmd = %s), %s, 1, $_zah_now)
+         ON CONFLICT(cmd_id, dir) DO UPDATE SET
+           dir_count = dir_count + 1, last_used_in_dir_ts = $_zah_now;" \
+      "$_zah_cmd" "$_zah_cmd" "$_cmd_start_dir"
+  fi
+
   # Return 2: we own ring addition via print -s; prevent zsh double-add and HISTFILE write
   return 2
 }
@@ -300,28 +364,6 @@ _ranked_hist_precmd() {
     _ranked_hist_load
   fi
   _RANKED_HIST_DB_MTIME="${mtime[1]}"
-
-  # Log suggestion outcome (before _pending_cmd is cleared)
-  if [[ "$RANKED_HIST_LOG_SUGGESTIONS" == true && -n "$_RANKED_HIST_LAST_SUGGESTION" ]]; then
-    if [[ -n "$_pending_cmd" ]]; then
-      local _sug="$_RANKED_HIST_LAST_SUGGESTION" _pfx="$_RANKED_HIST_LAST_PREFIX"
-      local _exe="$_pending_cmd"
-      # Normalize alias so executed form matches DB
-      if [[ "$RANKED_HIST_EXPAND_ALIASES" == true ]]; then
-        local _ef="${_exe%% *}"
-        if (( ${+aliases[$_ef]} )) && [[ "${aliases[$_ef]%% *}" != "$_ef" ]]; then
-          _exe="${aliases[$_ef]}${_exe#$_ef}"
-        fi
-      fi
-      local _acc=0
-      [[ "$_exe" == "$_sug"* || "$_sug" == "$_exe"* ]] && _acc=1
-      { _ranked_hist_sql \
-        "INSERT INTO suggestion_log(ts, prefix, suggestion, executed, accepted, dir)
-         VALUES($EPOCHREALTIME, %s, %s, %s, $_acc, %s)" \
-        "$_pfx" "$_sug" "$_exe" "$PWD" } &!
-    fi
-    _RANKED_HIST_LAST_SUGGESTION=""
-  fi
 
   [[ -z "$_pending_cmd" ]] && return
 
@@ -348,9 +390,10 @@ _ranked_hist_precmd() {
   # Filter: only worthy commands go to DB
   # Success (0), Ctrl-C (130), or long-running non-not-found
   if [[ $exit_code -eq 0 || $exit_code -eq 130 || ($duration_int -ge 1 && $exit_code -ne 127) ]]; then
-    # Async DB write
+    # Async DB write — update exit code/duration, add fragments + sequences
+    # (row already inserted by zshaddhistory)
+    # Uses $_cmd_start_dir for sequence dir — matches issue-time PWD semantics.
     {
-      # Build fragment SQL for compound commands
       _ranked_hist_fragment_sql "$cmd" "$now"
       local seq_sql=""
       local -a seq_params=()
@@ -361,22 +404,16 @@ _ranked_hist_precmd() {
           WHERE (SELECT id FROM commands WHERE cmd = %s) IS NOT NULL
           ON CONFLICT(prev_cmd_id, next_cmd_id, dir) DO UPDATE SET
             count = count + 1, last_seen_ts = $now;"
-        seq_params=("$_RANKED_HIST_LAST_CMD" "$cmd" "$PWD" "$_RANKED_HIST_LAST_CMD")
+        seq_params=("$_RANKED_HIST_LAST_CMD" "$cmd" "$_cmd_start_dir" "$_RANKED_HIST_LAST_CMD")
       fi
       _ranked_hist_sql \
         "BEGIN;
-         INSERT INTO commands(cmd, total_count, last_used_ts, first_used_ts)
-           VALUES(%s, 1, $now, $now)
-           ON CONFLICT(cmd) DO UPDATE SET
-             total_count = total_count + 1, last_used_ts = $now, is_fragment = 0;
-         INSERT INTO command_dirs(cmd_id, dir, dir_count, last_used_in_dir_ts)
-           VALUES((SELECT id FROM commands WHERE cmd = %s), %s, 1, $now)
-           ON CONFLICT(cmd_id, dir) DO UPDATE SET
-             dir_count = dir_count + 1, last_used_in_dir_ts = $now;
+         UPDATE commands SET last_exit_code = $exit_code, last_duration = $duration_float
+           WHERE cmd = %s;
          $REPLY
          ${seq_sql:+$seq_sql}
          COMMIT;" \
-        "$cmd" "$cmd" "$PWD" \
+        "$cmd" \
         "${seq_params[@]}"
     } &!
 
@@ -448,7 +485,37 @@ _ranked_hist_precmd() {
       _RANKED_HIST_GLOBAL_LIST=(${_RANKED_HIST_GLOBAL_LIST:#${(b)decoded}})
       _RANKED_HIST_GLOBAL_LIST=("$decoded" "${_RANKED_HIST_GLOBAL_LIST[@]}")
     fi
+  else
+    # Unworthy command — undo the zshaddhistory count bump.
+    # Previously-worthy commands survive: zshaddhistory bumped total_count from N to N+1,
+    # this decrements back to N (>= 1). Only first-time unworthy commands (N was 0,
+    # bumped to 1, decremented to 0) get DELETEd — they were never worthy.
+    # Uses $_cmd_start_dir (issue-time PWD) — matches the dir used in zshaddhistory INSERT.
+    {
+      _ranked_hist_sql \
+        "BEGIN;
+         UPDATE commands SET total_count = total_count - 1,
+           last_exit_code = $exit_code, last_duration = $duration_float
+         WHERE cmd = %s;
+         DELETE FROM command_dirs
+         WHERE cmd_id = (SELECT id FROM commands WHERE cmd = %s)
+           AND dir = %s
+           AND dir_count <= 1;
+         UPDATE command_dirs SET dir_count = dir_count - 1
+         WHERE cmd_id = (SELECT id FROM commands WHERE cmd = %s)
+           AND dir = %s
+           AND dir_count > 1;
+         DELETE FROM command_sequences
+         WHERE prev_cmd_id IN (SELECT id FROM commands WHERE cmd = %s AND total_count <= 0)
+            OR next_cmd_id IN (SELECT id FROM commands WHERE cmd = %s AND total_count <= 0);
+         DELETE FROM command_dirs
+         WHERE cmd_id IN (SELECT id FROM commands WHERE cmd = %s AND total_count <= 0);
+         DELETE FROM commands WHERE cmd = %s AND total_count <= 0;
+         COMMIT;" \
+        "$cmd" "$cmd" "$_cmd_start_dir" "$cmd" "$_cmd_start_dir" "$cmd" "$cmd" "$cmd" "$cmd"
+    } &!
   fi
+  _cmd_start_dir=""
 }
 
 # --- Task 3: Shell-start ring population ---
@@ -456,6 +523,7 @@ _ranked_hist_precmd() {
 _ranked_hist_populate_ring() {
   sqlite3 -escape off -cmd ".timeout 1000" "$RANKED_HIST_DB" \
     "SELECT replace(cmd, char(10), char(30)) FROM commands
+     WHERE total_count > 0
      ORDER BY last_used_ts ASC LIMIT $RANKED_HIST_RING_SIZE" 2>/dev/null \
   | while IFS= read -r line; do
       print -s -- "${line//$_RANKED_HIST_RS/$_RANKED_HIST_NL}"
@@ -500,7 +568,7 @@ _ranked_hist_load() {
   # Global list: ordered by pure recency (for Opt+Up/Down navigation)
   sqlite3 -escape off -cmd ".timeout 1000" "$RANKED_HIST_DB" \
     "SELECT replace(cmd, char(10), char(30)) FROM commands
-     WHERE is_fragment = 0
+     WHERE is_fragment = 0 AND total_count > 0
      ORDER BY last_used_ts DESC" 2>/dev/null \
   | while IFS= read -r line; do
       [[ -z "$line" ]] && continue
@@ -564,12 +632,10 @@ _ranked_hist_is_path_like() {
 }
 
 _zsh_autosuggest_strategy_ranked_history() {
-  _RANKED_HIST_LAST_SUGGESTION=""
   local prefix="$1"
   if [[ -z "$prefix" ]]; then
     if [[ -n "$_RANKED_HIST_NEXT_PREDICTION" ]]; then
       suggestion="$_RANKED_HIST_NEXT_PREDICTION"
-      _RANKED_HIST_LAST_SUGGESTION="$suggestion"; _RANKED_HIST_LAST_PREFIX=""
     fi
     return
   fi
@@ -585,7 +651,6 @@ _zsh_autosuggest_strategy_ranked_history() {
   # Promote sequence prediction when prefix matches and seen more than once
   if (( _RANKED_HIST_NEXT_PRED_COUNT > 1 )) && [[ -n "$_RANKED_HIST_NEXT_PREDICTION" && "$_RANKED_HIST_NEXT_PREDICTION" == "$prefix"* ]]; then
     suggestion="$_RANKED_HIST_NEXT_PREDICTION"
-    _RANKED_HIST_LAST_SUGGESTION="$suggestion"; _RANKED_HIST_LAST_PREFIX="$1"
     [[ -n "$_arev" ]] && suggestion="${_arev}${suggestion#${aliases[$_arev]}}"
     return
   fi
@@ -622,7 +687,6 @@ _zsh_autosuggest_strategy_ranked_history() {
         local truncated="${trimmed% *} "
         if (( ${#truncated} > ${#encoded_prefix} + 3 )); then
           suggestion="${truncated//$_RANKED_HIST_RS/$_RANKED_HIST_NL}"
-          _RANKED_HIST_LAST_SUGGESTION="$suggestion"; _RANKED_HIST_LAST_PREFIX="$1"
           [[ -n "$_arev" ]] && suggestion="${_arev}${suggestion#${aliases[$_arev]}}"
           return
         fi
@@ -667,7 +731,6 @@ _zsh_autosuggest_strategy_ranked_history() {
   fi
 
   suggestion="${best//$_RANKED_HIST_RS/$_RANKED_HIST_NL}"
-  _RANKED_HIST_LAST_SUGGESTION="$suggestion"; _RANKED_HIST_LAST_PREFIX="$1"
   [[ -n "$_arev" ]] && suggestion="${_arev}${suggestion#${aliases[$_arev]}}"
 }
 
@@ -707,12 +770,14 @@ _ranked_hist_preview() {
           AND cd3.dir LIKE '$parent_esc/%'
           AND cd3.dir NOT LIKE '$parent_esc/%/%'
           AND cd3.dir != '$pwd_esc'
-      ), 0.0), 4)
+      ), 0.0), 4),
+      c.last_exit_code,
+      round(c.last_duration, 1)
     FROM commands c
     WHERE c.id = $id" 2>/dev/null)
   [[ -z "$meta" ]] && { echo "Command not found in DB"; return }
-  local cmd count last_used first_used is_frag s_recency s_pwd s_freq s_frag_pen s_len_pen s_sibling
-  IFS=$_RANKED_HIST_US read -r cmd count last_used first_used is_frag s_recency s_pwd s_freq s_frag_pen s_len_pen s_sibling <<< "$meta"
+  local cmd count last_used first_used is_frag s_recency s_pwd s_freq s_frag_pen s_len_pen s_sibling _ec _dur
+  IFS=$_RANKED_HIST_US read -r cmd count last_used first_used is_frag s_recency s_pwd s_freq s_frag_pen s_len_pen s_sibling _ec _dur <<< "$meta"
   cmd="${cmd//$_RANKED_HIST_RS/$_RANKED_HIST_NL}"
   local dirs
   dirs=$(sqlite3 -cmd ".timeout 1000" "$db" "
@@ -767,6 +832,8 @@ _ranked_hist_preview() {
   printf '\033[1m%-18s\033[0m %s\n' "Times called:" "$count"
   printf '\033[1m%-18s\033[0m %s\n' "Last used:" "$last_used"
   printf '\033[1m%-18s\033[0m %s\n' "First used:" "$first_used"
+  [[ -n "$_ec" ]] && printf '\033[1m%-18s\033[0m %s\n' "Last exit code:" "$_ec"
+  [[ -n "$_dur" ]] && printf '\033[1m%-18s\033[0m %ss\n' "Last duration:" "$_dur"
   [[ "$is_frag" == "1" ]] && printf '\033[1m%-18s\033[0m \033[33myes\033[0m\n' "Fragment:"
   printf '\n\033[1;36m── Score ──\033[0m\n'
   printf '\033[1m%-18s\033[0m %s\n' "Recency:" "$s_recency"
