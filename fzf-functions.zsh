@@ -87,45 +87,41 @@ FZF-EOF"
 }
 
 
-function  fzf_man_search(){
-    man -k . \
-    | fzf -n1,2 --preview "echo {} \
-    | cut -d' ' -f1 \
-    | sed 's# (#.#' \
-    | sed 's#)##' \
-    | xargs -I% man %" --bind "enter:execute: \
-      (echo {} \
-      | cut -d' ' -f1 \
-      | sed 's# (#.#' \
-      | sed 's#)##' \
-      | xargs -I% man % \
-      | less -R)"
+function fzf_man_search() {
+  local cache="${TMPDIR:-/tmp}/man-k-cache.$UID"
+  # Refresh cache if missing or manpath dirs changed since last cache
+  if [[ ! -f "$cache" ]] || [[ /usr/share/man -nt "$cache" ]] || [[ /usr/local/share/man -nt "$cache" ]]; then
+    man -k . > "$cache" 2>/dev/null
+  fi
+  # awk extracts section and name from "name(section)" → "section name" for `man section name`.
+  # macOS man does NOT support the `name.section` dot syntax (Linux/GNU convention).
+  local awk_cmd='awk '"'"'{n=$1; sub(/\(.*/, "", n); s=$1; sub(/.*\(/, "", s); sub(/\).*/, "", s); print s, n}'"'"' <<< {}'
+  < "$cache" fzf -n1,2 \
+    --preview "$awk_cmd | xargs man" \
+    --bind "enter:execute:$awk_cmd | xargs man | less -R"
 }
 
-function fzf_man_content_search(){
-    local do_sort=0
-    while [[ "$1" == -* ]]; do
-        case "$1" in
-            -h|--help) echo "Usage: fzf_man_content_search [-s] [query]\nSearch man page content with ripgrep, browse with fzf\n  -s  Sort by match count (disables streaming)"; return;;
-            -s) do_sort=1; shift;;
-            *) shift;;
-        esac
-    done
-    local query="${1:-}"
-    [[ -z "$query" ]] && read -r "query?Search man pages for: "
-    [[ -z "$query" ]] && return 1
-    if (( do_sort )); then
-        rg -c --search-zip "$query" $(manpath | tr ':' ' ') 2>/dev/null \
-        | sed 's|.*/||; s/\.[0-9a-z].*:/:/' \
-        | awk -F: '!seen[$1]++ {printf "%4d %s\n", $2, $1}' \
-        | sort -rn \
-        | fzf -n2 --preview "man {2}" --bind "enter:execute:man {2} | less -R"
-    else
-        rg -c --search-zip "$query" $(manpath | tr ':' ' ') 2>/dev/null \
-        | sed 's|.*/||; s/\.[0-9a-z].*:/:/' \
-        | awk -F: '!seen[$1]++ {printf "%4d %s\n", $2, $1}' \
-        | fzf -n2 --preview "man {2}" --bind "enter:execute:man {2} | less -R"
-    fi
+function fzf_man_content_search() {
+  local do_sort=0
+  while [[ "$1" == -* ]]; do
+    case "$1" in
+      -h|--help) echo "Usage: fzf_man_content_search [-s] [query]\nSearch man page content with ripgrep, browse with fzf\n  -s  Sort by match count"; return;;
+      -s) do_sort=1; shift;;
+      *) shift;;
+    esac
+  done
+  local dirs="$(manpath | tr ':' ' ')"
+  local sort_cmd="cat"
+  (( do_sort )) && sort_cmd="sort -rn"
+  # --disabled: fzf does no filtering; change:reload re-runs rg on each query change.
+  # fzf cancels the previous reload when a new change event fires — natural debounce.
+  # Guard: empty {q} would match every line in every man page — skip rg entirely.
+  local reload_cmd='[[ -n {q} ]] && rg -c --search-zip {q} '"$dirs"' 2>/dev/null | sed '"'"'s|.*/||; s/\.[0-9a-z].*:/:/'"'"' | awk -F: '"'"'!seen[$1]++ {printf "%4d %s\n", $2, $1}'"'"' | '"$sort_cmd"' || true'
+  fzf --disabled --ansi -n2 \
+    --query "${1:-}" \
+    --bind "change:reload:$reload_cmd" \
+    --preview "man {2}" \
+    --bind "enter:execute:man {2} | less -R"
 }
 
 function export_aws_profile() {
