@@ -110,6 +110,13 @@
 #               existing plan.md and revise it to incorporate the additional
 #               instructions, rather than treating it as complete.
 #
+# 14. Branch creation race with stale worktree pruning
+#     Problem:  `git branch "$branch" HEAD` ran before stale worktree pruning.
+#               If a stale worktree used the same branch name, pruning deleted
+#               the just-created branch, causing `git worktree add` to fail
+#               with `fatal: invalid reference`.
+#     Solution: Move branch creation to after stale worktree pruning.
+#
 # DESIGN DECISIONS
 # ================
 #
@@ -492,10 +499,9 @@ setup_worktree() {
   local branch="$RALPH_RUN_BRANCH"
   WORKTREE_DIR="${ORIG_DIR}/${RALPH_RUN_DIR}/worktree"
 
-  # Create run directory, branch + worktree
+  # Create run directory
   mkdir -p "${ORIG_DIR}/${RALPH_RUN_DIR}"
-  git branch "$branch" HEAD 2>/dev/null || true
-  # Prune stale worktrees and force-delete their branches
+  # Prune stale worktrees and force-delete their branches BEFORE creating the new branch
   local stale_wt
   stale_wt=$(git worktree list --porcelain | awk '/^worktree /{wt=$2} /^branch /{br=$2; if (wt) print wt "\t" br}' \
     | while IFS=$'\t' read -r wt br; do
@@ -509,6 +515,7 @@ setup_worktree() {
     done <<< "$stale_wt"
   fi
 
+  git branch "$branch" HEAD 2>/dev/null || true
   CODE_DEFENDER_SKIP_LOCAL_HOOKS=true git worktree add -q "$WORKTREE_DIR" "$branch"
   echo "$WORKTREE_DIR" > "$RALPH_WORKTREE_FILE"
 
@@ -552,6 +559,7 @@ on_interrupt() {
   echo "  Agent log: $AGENT_LOG"
   echo "  Diff:      $RALPH_DIFF"
   [[ -n "$WORKTREE_DIR" ]] && echo "  Worktree:  $WORKTREE_DIR (preserved)"
+  $PLAN_MODE && [[ -f "$PWD/plan.md" ]] && echo "  Plan:      $PWD/plan.md"
   local resume="$0 --continue"
   [[ -n "$RALPH_RUN_BRANCH" ]] && resume+=" --branch $RALPH_RUN_BRANCH"
   echo "  Resume:    $resume \"<instructions>\""
@@ -1295,6 +1303,7 @@ fi
 echo "$TASK" > "$RALPH_TASK"
 snapshot_pre
 build_diff
+kiro-cli chat "/todo delete --all" --no-interactive 2>/dev/null || true
 LOOP_START=$SECONDS
 
 round=0
@@ -1375,6 +1384,9 @@ while true; do
       echo "\n📝 Summary ($RALPH_SUMMARY):\n"
       cat "$RALPH_SUMMARY"
       echo ""
+    fi
+    if $PLAN_MODE && [[ -f "$PWD/plan.md" ]]; then
+      echo "📋 Plan: $PWD/plan.md"
     fi
 
     snapshot_post
