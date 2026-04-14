@@ -1,6 +1,9 @@
 # Kiro CLI pre block. Keep at the top of this file.
 [[ -f "${HOME}/Library/Application Support/kiro-cli/shell/zshrc.pre.zsh" ]] && builtin source "${HOME}/Library/Application Support/kiro-cli/shell/zshrc.pre.zsh"
 
+# Install Oh My Zsh if missing
+[[ ! -d "$HOME/.oh-my-zsh" ]] && sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+
 # Skip compaudit security checks - define as function to prevent autoload
 function compaudit { return 0 }
 
@@ -51,6 +54,21 @@ function complete { __complete_args+=("$*") }
   if $do_update; then
     echo "zsh: updating plugins due to 8 hour check..."
     touch "$stamp"
+  fi
+}
+
+# Theme management — clone missing, update existing every 8h in background
+() {
+  local theme_dir="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/themes/powerlevel10k"
+  local stamp="$HOME/.cache/zsh-plugin-update"
+  if [[ ! -d "$theme_dir/.git" ]]; then
+    echo "zsh: cloning theme powerlevel10k..."
+    git clone --depth=1 https://github.com/romkatv/powerlevel10k.git "$theme_dir"
+  elif [[ -f "$stamp" ]] && (( $(date +%s) - $(date -r "$stamp" +%s 2>/dev/null || echo 0) <= 28800 )); then
+    ({\
+      local out; out=$(git -C "$theme_dir" pull --ff-only 2>&1)
+      [[ "$out" != *"Already up to date"* && -n "$out" ]] && echo "zsh: powerlevel10k updated"
+    } &!)
   fi
 }
 
@@ -124,6 +142,7 @@ export EDITOR=nano
 unset YSU_HARDCORE
 
 # PATH setup
+path_prepend "$HOME/UluruMigrationCli"
 path_prepend "$HOME/.toolbox/bin"
 path_prepend "${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/plugins/git-fuzzy/bin"
 path_append "$HOME/.lmstudio/bin"
