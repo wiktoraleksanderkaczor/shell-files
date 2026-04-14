@@ -25,7 +25,6 @@ function complete { __complete_args+=("$*") }
     fast-syntax-highlighting "https://github.com/zdharma-continuum/fast-syntax-highlighting.git"
     git-fuzzy                "https://github.com/bigH/git-fuzzy.git"
     warhol                   "https://github.com/unixorn/warhol.plugin.zsh.git"
-    you-should-use           "https://github.com/MichaelAquilina/zsh-you-should-use.git"
     zsh-autosuggestions      "https://github.com/zsh-users/zsh-autosuggestions"
     zsh-completions          "https://github.com/zsh-users/zsh-completions.git"
     zsh-defer                "https://github.com/romkatv/zsh-defer.git"
@@ -375,7 +374,7 @@ flip() { echo -n "（╯°□°）╯ ┻━┻" | tee /dev/tty | pbcopy; }
 shrug() { echo -n "¯\_(ツ)_/¯" | tee /dev/tty | pbcopy; }
 
 # Custom completions
-(( $+commands[uluru] )) && source <(uluru --completion-init)
+[[ -f "$HOME/UluruMigrationCli/uluru.zsh" ]] && alias uluru="zsh $HOME/UluruMigrationCli/uluru.zsh" && source <(zsh "$HOME/UluruMigrationCli/uluru.zsh" --completion-init)
 
 # Kiro CLI post block. Keep at the bottom of this file.
 [[ -f "${HOME}/Library/Application Support/kiro-cli/shell/zshrc.post.zsh" ]] && builtin source "${HOME}/Library/Application Support/kiro-cli/shell/zshrc.post.zsh"
