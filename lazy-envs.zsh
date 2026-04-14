@@ -122,8 +122,8 @@ _load_nvm() {
 #
 # Original code:
 # _load_brazil_completion() {
-#   [[ -f /Users/wikkaczo/.brazil_completion/zsh_completion ]] || return 1
-#   zsource /Users/wikkaczo/.brazil_completion/zsh_completion
+#   [[ -f $HOME/.brazil_completion/zsh_completion ]] || return 1
+#   zsource $HOME/.brazil_completion/zsh_completion
 # }
 _load_brazil_completion() {
   local brazil_comp
@@ -163,10 +163,20 @@ _load_isengard() {
 #     zsh-defer eval "$(/opt/homebrew/bin/brew shellenv)"
 #   fi
 # fi
-export HOMEBREW_PREFIX="/opt/homebrew"
-export HOMEBREW_CELLAR="/opt/homebrew/Cellar"
-export HOMEBREW_REPOSITORY="/opt/homebrew"
-path=("/opt/homebrew/bin" "/opt/homebrew/sbin" $path)
+if [[ "$OSTYPE" == darwin* ]]; then
+  export HOMEBREW_PREFIX="/opt/homebrew"
+  export HOMEBREW_CELLAR="/opt/homebrew/Cellar"
+  export HOMEBREW_REPOSITORY="/opt/homebrew"
+  path=("/opt/homebrew/bin" "/opt/homebrew/sbin" $path)
+elif [[ "$OSTYPE" == linux* ]]; then
+  eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv zsh)"
+fi
+
+if [[ -f /etc/system-release ]] && grep -qi "amazon linux" /etc/system-release; then
+  export CC=gcc10-gcc
+  export CXX=gcc10-g++
+  export RUSTFLAGS="-C linker=$CC"
+fi
 
 # Deferred loads
 # NVM - fully lazy, only load when nvm command is used (saves 58ms)
