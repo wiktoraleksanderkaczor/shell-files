@@ -28,6 +28,10 @@ gemini-steering() {
 }
 
 kiro-steering() {
-  kiro-cli chat "/todo delete --all" --no-interactive
-  kiro-cli chat "$@"
+  if [[ $# -eq 0 ]]; then
+    kiro-cli chat "/todo delete --all"
+  else
+    kiro-cli chat "/todo delete --all" --no-interactive
+    kiro-cli chat "$@"
+  fi
 }

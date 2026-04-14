@@ -12,6 +12,48 @@ function compdef { __compdef_args+=("$*") }
 typeset -ga __complete_args=()
 function complete { __complete_args+=("$*") }
 
+# Plugin management — clone missing, update existing every 8h in background
+() {
+  local plugin_dir="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/plugins"
+  local stamp="$HOME/.cache/zsh-plugin-update"
+  local -A plugins=(
+    colorize                 "https://github.com/zpm-zsh/colorize.git"
+    colors                   "https://github.com/zpm-zsh/colors"
+    fast-syntax-highlighting "https://github.com/zdharma-continuum/fast-syntax-highlighting.git"
+    git-fuzzy                "https://github.com/bigH/git-fuzzy.git"
+    warhol                   "https://github.com/unixorn/warhol.plugin.zsh.git"
+    you-should-use           "https://github.com/MichaelAquilina/zsh-you-should-use.git"
+    zsh-autosuggestions      "https://github.com/zsh-users/zsh-autosuggestions"
+    zsh-completions          "https://github.com/zsh-users/zsh-completions.git"
+    zsh-defer                "https://github.com/romkatv/zsh-defer.git"
+    zsh-syntax-highlighting  "https://github.com/zsh-users/zsh-syntax-highlighting.git"
+  )
+
+  local do_update=false
+  if [[ ! -f "$stamp" ]] || (( $(date +%s) - $(date -r "$stamp" +%s 2>/dev/null || echo 0) > 28800 )); then
+    do_update=true
+  fi
+
+  local name url
+  for name url in ${(kv)plugins}; do
+    local dir="$plugin_dir/$name"
+    if [[ ! -d "$dir/.git" ]]; then
+      echo "zsh: cloning plugin $name..."
+      git clone --depth=1 "$url" "$dir"
+    elif $do_update; then
+      ({
+        local out; out=$(git -C "$dir" pull --ff-only 2>&1)
+        [[ "$out" != *"Already up to date"* && -n "$out" ]] && echo "zsh: $name updated"
+      } &!)
+    fi
+  done
+
+  if $do_update; then
+    echo "zsh: updating plugins due to 8 hour check..."
+    touch "$stamp"
+  fi
+}
+
 # Load helpers
 source ~/.zsh/helpers.zsh
 source ~/.oh-my-zsh/custom/plugins/zsh-defer/zsh-defer.plugin.zsh
@@ -90,6 +132,7 @@ path_prepend "$HOME/.rodar/bin" "/opt/homebrew/opt/ruby/bin"
 # path_prepend "$HOME/.gem/ruby/3.4.0/bin"
 path_prepend "/opt/homebrew/opt/ruby@3.2/bin"
 path_prepend "$HOME/.lmstudio/bin"
+path_prepend "$HOME/.local/bin"
 
 # History setup
 HISTFILE="$HOME/.zsh_history"
@@ -153,7 +196,7 @@ alias docker="finch"
 alias cat='bat --plain --paging=never'
 # alias find='fd'
 # alias grep='rg'
-alias grep='git grep --exclude-standard'
+# alias grep='git grep --exclude-standard'
 alias du='dust'
 alias df='duf'
 alias watch='viddy'
