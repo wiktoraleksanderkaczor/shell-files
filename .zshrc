@@ -76,6 +76,7 @@ function complete { __complete_args+=("$*") }
 source ~/shell-files/helpers.zsh
 source ~/.oh-my-zsh/custom/plugins/zsh-defer/zsh-defer.plugin.zsh
 source ~/shell-files/lazy-envs.zsh
+zsh-defer brew_ensure
 
 # Compile .zshrc for faster loading
 if [[ ~/.zshrc -nt ~/.zshrc.zwc ]]; then
@@ -189,7 +190,7 @@ plugins=(
   fast-syntax-highlighting
   zsh-autosuggestions
 )
-deferred_plugins=(colorize warhol you-should-use)
+deferred_plugins=(colorize warhol)
 ZSH_COLORIZE_TOOL="pygmentize"
 ZSH_COLORIZE_STYLE="colorful"
 ZSH_HIGHLIGHT_HIGHLIGHTERS+=(brackets pattern cursor line regexp)
