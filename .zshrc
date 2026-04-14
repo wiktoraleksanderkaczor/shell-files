@@ -55,9 +55,9 @@ function complete { __complete_args+=("$*") }
 }
 
 # Load helpers
-source ~/.zsh/helpers.zsh
+source ~/shell-files/helpers.zsh
 source ~/.oh-my-zsh/custom/plugins/zsh-defer/zsh-defer.plugin.zsh
-source ~/.zsh/lazy-envs.zsh
+source ~/shell-files/lazy-envs.zsh
 
 # Compile .zshrc for faster loading
 if [[ ~/.zshrc -nt ~/.zshrc.zwc ]]; then
@@ -179,7 +179,7 @@ fpath+=${ZSH_CUSTOM:-${ZSH:-~/.oh-my-zsh}/custom}/plugins/zsh-completions/src
 
 source $ZSH/oh-my-zsh.sh
 
-source ~/.zsh/history.zsh
+source ~/shell-files/history.zsh
 
 # Completion settings
 setopt AUTO_MENU                 # Show completion menu on tab
@@ -231,10 +231,10 @@ docker_clean() {
 # alias -s py=code
 
 # Load functions
-source ~/.zsh/file-functions.zsh
-source ~/.zsh/auth-functions.zsh
-source ~/.zsh/ai-functions.zsh
-source ~/.zsh/fzf-functions.zsh
+source ~/shell-files/file-functions.zsh
+source ~/shell-files/auth-functions.zsh
+source ~/shell-files/ai-functions.zsh
+source ~/shell-files/fzf-functions.zsh
 
 # Auto-activate venv when entering directory with .venv
 autoload -U add-zsh-hook
