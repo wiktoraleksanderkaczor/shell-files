@@ -1,2 +1,4 @@
 __pycache__/
 auth-functions.zsh
+.env
+.venv/
