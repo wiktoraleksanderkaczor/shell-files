@@ -249,6 +249,9 @@ docker_clean() {
 # Default file click open
 # alias -s py=code
 
+# Load variables
+source ~/shell-files/.env
+
 # Load functions
 source ~/shell-files/file-functions.zsh
 source ~/shell-files/auth-functions.zsh
@@ -378,3 +381,6 @@ shrug() { echo -n "¯\_(ツ)_/¯" | tee /dev/tty | pbcopy; }
 
 # Kiro CLI post block. Keep at the bottom of this file.
 [[ -f "${HOME}/Library/Application Support/kiro-cli/shell/zshrc.post.zsh" ]] && builtin source "${HOME}/Library/Application Support/kiro-cli/shell/zshrc.post.zsh"
+
+# Added by AIM CLI
+export PATH="$HOME/.aim/mcp-servers:$PATH"
