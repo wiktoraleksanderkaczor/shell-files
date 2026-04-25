@@ -210,6 +210,7 @@ zstyle ':completion:*' menu select
 [[ ! -f ~/.p10k.zsh ]] || zsource ~/.p10k.zsh
 
 # Aliases
+alias md5="md5sum"
 alias bb="brazil-build"
 alias docker="finch"
 alias cat='bat --plain --paging=never'
@@ -381,6 +382,9 @@ shrug() { echo -n "¯\_(ツ)_/¯" | tee /dev/tty | pbcopy; }
 
 # Kiro CLI post block. Keep at the bottom of this file.
 [[ -f "${HOME}/Library/Application Support/kiro-cli/shell/zshrc.post.zsh" ]] && builtin source "${HOME}/Library/Application Support/kiro-cli/shell/zshrc.post.zsh"
+
+# if you wish to use IMDS set AWS_EC2_METADATA_DISABLED=false
+export AWS_EC2_METADATA_DISABLED=true
 
 # Added by AIM CLI
 export PATH="$HOME/.aim/mcp-servers:$PATH"

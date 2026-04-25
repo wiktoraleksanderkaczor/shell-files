@@ -466,7 +466,7 @@ bootstrap_kiro_config() {
     "$SCRIPT_DIR/ralph/ralph.json"  "$HOME/.kiro/agents/ralph.json" \
     "$SCRIPT_DIR/ralph/WORKFLOW.md" "$HOME/.kiro/steering/WORKFLOW.md"; do
     mkdir -p "${dst:h}"
-    if [[ ! -f "$dst" ]] || [[ "$(md5 -q "$src")" != "$(md5 -q "$dst")" ]]; then
+    if [[ ! -f "$dst" ]] || [[ "$(md5sum "$src" | cut -d' ' -f1)" != "$(md5sum "$dst" | cut -d' ' -f1)" ]]; then
       cp "$src" "$dst"
       echo "📋 Updated $dst"
     fi
@@ -736,7 +736,7 @@ extract_worker_files() {
   # From git: files actually changed during this round (agent-only, via pre-round manifest)
   files_changed_in_round >> "$WORKER_FILES"
   # Normalize to absolute paths, then dedup
-  sed -i '' "s|^[^/]|$PWD/&|" "$WORKER_FILES"
+  sed -i "s|^[^/]|$PWD/&|" "$WORKER_FILES"
   sort -uo "$WORKER_FILES" "$WORKER_FILES" 2>/dev/null || true
 }
 
@@ -847,7 +847,7 @@ fmt_external_changes_block() {
     [[ -f "$f" ]] || continue
     (( ${+wf_set[$f]} )) && continue
     (( ${+wf_set[$PWD/$f]} )) && continue
-    local mtime=$(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "$f" 2>/dev/null)
+    local mtime=$(stat -c '%y' "$f" 2>/dev/null | cut -d: -f1,2)
     external+="  $f  (modified: ${mtime:-unknown})"$'\n'
   done <<< "$all_changed"
   [[ -n "$external" ]] || return 0
@@ -906,7 +906,7 @@ batch_md5() {
     [[ -f "$f" ]] && echo "$f"
   done > "$tmp"
   if [[ -s "$tmp" ]]; then
-    xargs md5 -r < "$tmp" | sed 's/ /  /'
+    xargs md5sum < "$tmp"
   fi
   rm -f "$tmp"
 }
