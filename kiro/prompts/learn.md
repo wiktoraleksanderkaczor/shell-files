@@ -1,0 +1,1 @@
+Reflect on this task/session. Use the thinking tool multiple times to consider learnings at different levels. What patterns emerged? What worked well, what didn't? What should be documented in steering files for future reference? Consider technical, process, and metacognitive learnings.
