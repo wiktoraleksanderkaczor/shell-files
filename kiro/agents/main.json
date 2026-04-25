@@ -1,0 +1,29 @@
+{
+  "name": "main",
+  "description": "Default agent with subagents",
+  "tools": [
+    "subagent",
+    "write",
+    "shell",
+    "web_search",
+    "web_fetch",
+    "todo",
+    "code"
+  ],
+  "toolsSettings": {
+    "shell": {
+      "autoAllowReadonly": true,
+      "allowedCommands": ["sort", "xargs cat", "git grep", "grep", "wc", "find", "head", "tail", "cat"]
+    }
+  },
+  "hooks": {},
+  "resources": [
+    "file://~/.kiro/steering/WORKFLOW.md",
+    "file://REPOMAP*.md",
+    "file://AGENTS.md",
+    "file://README.md",
+    "file://.gitignore",
+    "file://.repoignore"
+  ],
+  "includeMcpJson": false
+}
