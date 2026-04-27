@@ -736,7 +736,7 @@ extract_worker_files() {
   # From git: files actually changed during this round (agent-only, via pre-round manifest)
   files_changed_in_round >> "$WORKER_FILES"
   # Normalize to absolute paths, then dedup
-  sed -i "s|^[^/]|$PWD/&|" "$WORKER_FILES"
+  sed "s|^[^/]|$PWD/&|" "$WORKER_FILES" > "$WORKER_FILES.tmp" && mv "$WORKER_FILES.tmp" "$WORKER_FILES"
   sort -uo "$WORKER_FILES" "$WORKER_FILES" 2>/dev/null || true
 }
 
