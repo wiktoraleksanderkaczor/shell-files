@@ -463,8 +463,8 @@ SCRIPT_DIR="${0:A:h}"
 bootstrap_kiro_config() {
   local src dst
   for src dst in \
-    "$SCRIPT_DIR/ralph/ralph.json"  "$HOME/.kiro/agents/ralph.json" \
-    "$SCRIPT_DIR/ralph/WORKFLOW.md" "$HOME/.kiro/steering/WORKFLOW.md"; do
+    "$SCRIPT_DIR/kiro/agents/ralph.json"  "$HOME/.kiro/agents/ralph.json" \
+    "$SCRIPT_DIR/kiro/steering/WORKFLOW.md" "$HOME/.kiro/steering/WORKFLOW.md"; do
     mkdir -p "${dst:h}"
     if [[ ! -f "$dst" ]] || [[ "$(md5sum "$src" | cut -d' ' -f1)" != "$(md5sum "$dst" | cut -d' ' -f1)" ]]; then
       cp "$src" "$dst"
