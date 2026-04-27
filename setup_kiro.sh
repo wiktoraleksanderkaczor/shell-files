@@ -12,6 +12,7 @@ files=(
   prompts/audit.md
   prompts/learn.md
   prompts/plan.md
+  prompts/handoff.md
   steering/WORKFLOW-UPDATE-GUIDE.md
   steering/WORKFLOW.md
 )
