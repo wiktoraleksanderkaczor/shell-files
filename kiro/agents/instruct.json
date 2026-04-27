@@ -12,7 +12,7 @@
   "toolsSettings": {
     "shell": {
       "autoAllowReadonly": true,
-      "allowedCommands": ["sort", "xargs cat", "git grep", "grep", "wc", "find", "head", "tail", "cat"]
+      "allowedCommands": ["sort", "xargs cat", "git grep", "grep", "wc", "find", "head", "tail", "cat", "sed"]
     }
   },
   "hooks": {},
