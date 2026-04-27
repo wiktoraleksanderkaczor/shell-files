@@ -143,6 +143,8 @@ If required files missing: prompt user → **WAIT** → return to **INTERPRET RE
 
 ### Code Development Principles
 
+**Right-Size the Solution**: Target the simplest, most maintainable change that fully satisfies the requirement — no more, no less. Do not add abstractions, layers, or generality the problem doesn't demand (overengineering); do not cut corners that leave the solution incomplete, fragile, or hard to extend when the problem clearly requires robustness (underengineering). When in doubt, ask: does this complexity exist to solve the actual problem, or to solve a hypothetical one?
+
 **Cognitive Simplicity First**: Minimize indirection — each function should do one thing clearly. Favor directness — if touching code, simplify it. Keep abstraction when it reduces duplication or encapsulates complexity; remove when it's a thin wrapper or single delegation.
 
 **Strict Typing**: Use explicit, precise types; avoid dynamic/any when structure is known. Prefer dot notation over dictionary access. Enums for fixed value sets, data classes for structured data, dictionary types only for existing dict APIs, dynamic types only for truly unknown structures. Discriminated unions: shared base type with enum discriminator for automatic type narrowing.
